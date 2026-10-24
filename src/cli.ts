@@ -11,7 +11,8 @@ import { Session, TaskOps } from "./ops.ts";
 import { runPipeline } from "./orchestrator/pipeline.ts";
 import { orchestratorPrompt, runOrchestrator, sessionPath, type OrchestratorRender } from "./orchestrator/run.ts";
 import { createYxuServer, SERVER_NAME, TOOL_NAMES } from "./orchestrator/tools.ts";
-import { claudeExecutable, isCompiled, VERSION, which } from "./platform.ts";
+import { claudeExecutable, isCompiled, runAttached, runSync, VERSION, which } from "./platform.ts";
+import { update } from "./update.ts";
 import { killAllSubagents, newTaskId, runTask } from "./runner.ts";
 import type { AgentProfile, CliName, TaskResult } from "./types.ts";
 
@@ -42,6 +43,8 @@ Usage:
   yxu models [agent|cli] [search] [--refresh] [--json]
                             list the models each agent CLI offers
   yxu doctor                check that agent CLIs are installed
+  yxu update [--check] [--version vX.Y.Z]
+                            update a release binary (npm/source installs: prints the command)
   yxu --version             print the yxu version
 `;
 
@@ -354,10 +357,9 @@ async function chat(argv: string[]) {
   if (positionals.length) args.push(positionals.join(" "));
 
   console.log(dim(`yxu chat · ${values.model ?? cfg.orchestrator.model} · workflow "${workflow.name}" · agents: ${Object.keys(cfg.agents).join(", ")}`));
-  const proc = Bun.spawn(args, { cwd: root, stdio: [values.print ? "ignore" : "inherit", "inherit", "inherit"] });
   // Let claude handle Ctrl-C itself.
   process.on("SIGINT", () => {});
-  const code = await proc.exited;
+  const code = await runAttached(args, { cwd: root, stdin: values.print ? "ignore" : "inherit" });
 
   if (existsSync(sessionFile)) {
     const snap = JSON.parse(readFileSync(sessionFile, "utf8"));
@@ -542,8 +544,7 @@ function doctor() {
     }
     // `cmd` self-updates on any invocation unless told not to.
     const args = cli === "commandcode" ? ["--version", "--no-auto-update"] : ["--version"];
-    const p = Bun.spawnSync([bin, ...args], { stdout: "pipe", stderr: "pipe" });
-    const ver = p.stdout.toString().trim().split("\n").at(-1) ?? "?";
+    const ver = runSync([bin, ...args]).stdout.trim().split("\n").at(-1) ?? "?";
     console.log(`✓ ${cli.padEnd(12)} ${ver}  (${path})`);
   }
   try {
@@ -609,6 +610,10 @@ try {
     case "models":
       await models(rest);
       break;
+    case "update": {
+      const { values } = parseArgs({ args: rest, options: { check: { type: "boolean" }, version: { type: "string" } } });
+      process.exit(await update({ check: values.check, version: values.version }));
+    }
     default:
       console.log(USAGE);
       process.exit(cmd && !["help", "--help", "-h"].includes(cmd) ? 1 : 0);

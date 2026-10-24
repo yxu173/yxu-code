@@ -1,19 +1,20 @@
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { runSync } from "./platform.ts";
 
 export function git(cwd: string, ...args: string[]): string {
-  const p = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
-  if (p.exitCode !== 0) {
-    throw new Error(`git ${args.join(" ")} failed: ${p.stderr.toString().trim()}`);
+  const p = runSync(["git", ...args], { cwd });
+  if (p.code !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${p.stderr.trim()}`);
   }
-  return p.stdout.toString().trim();
+  return p.stdout.trim();
 }
 
 /** Like git() but returns failure instead of throwing (for merges that may conflict). */
 export function tryGit(cwd: string, ...args: string[]): { ok: boolean; out: string; err: string } {
   try {
-    const p = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
-    return { ok: p.exitCode === 0, out: p.stdout.toString().trim(), err: p.stderr.toString().trim() };
+    const p = runSync(["git", ...args], { cwd });
+    return { ok: p.code === 0, out: p.stdout.trim(), err: p.stderr.trim() };
   } catch (e) {
     // e.g. cwd vanished: report as a failure rather than throwing.
     return { ok: false, out: "", err: (e as Error).message };

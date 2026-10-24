@@ -1,3 +1,4 @@
+import { killGroup, start } from "./platform.ts";
 export interface VerifyResult {
   ok: boolean;
   command: string;
@@ -13,30 +14,16 @@ const MAX_OUTPUT = 6_000;
 /** Run a check command (tests, lint, build) in a directory. */
 export async function runVerify(cwd: string, command: string, timeoutMs: number, signal?: AbortSignal): Promise<VerifyResult> {
   const started = Date.now();
-  const proc = Bun.spawn(["sh", "-c", `${command} 2>&1`], {
-    cwd,
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "ignore",
-    detached: true,
-    env: { ...process.env, CI: "1", NO_COLOR: "1" },
-  });
+  const proc = start(["sh", "-c", `${command} 2>&1`], { cwd, detached: true, env: { ...process.env, CI: "1", NO_COLOR: "1" } });
   let timedOut = false;
-  const kill = () => {
-    try {
-      process.kill(-proc.pid, "SIGKILL");
-    } catch {
-      // already gone
-    }
-  };
+  const kill = () => killGroup(proc.pid, "SIGKILL");
   const timer = setTimeout(() => {
     timedOut = true;
     kill();
   }, timeoutMs);
   signal?.addEventListener("abort", kill, { once: true });
 
-  const out = await new Response(proc.stdout).text();
-  const exitCode = await proc.exited;
+  const { stdout: out, code: exitCode } = await proc.result;
   clearTimeout(timer);
   signal?.removeEventListener("abort", kill);
 

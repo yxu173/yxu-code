@@ -12,6 +12,9 @@ before 1.0, minor versions may change the config format (with migration notes he
 - `yxu --version`; `yxu --demo` and other interface flags work without `tui`.
 - `yxu doctor` reports the yxu version and which Claude Code engine the orchestrator uses.
 - Compiled binaries use the `claude` on PATH (or `YXU_CLAUDE_PATH`) as the orchestrator engine.
+- `yxu update [--check] [--version vX.Y.Z]`: checksum-verified self-update for release binaries.
+- Homebrew formula and AUR `yxu-bin` package, generated and published by the release workflow.
+- All process spawning goes through `src/platform.ts`.
 
 ## 0.0.1
 

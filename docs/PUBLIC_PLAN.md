@@ -277,7 +277,9 @@ Phases 1–3 deliver most of the value. Packs (4) only make sense once the file 
   - a release workflow with binaries, checksums, `install.sh` and npm packages
   - community files and a README for new users
 
-  Remaining: Homebrew/AUR, `yxu update`, and moving `Bun.spawn` behind `platform.ts`.
+  - Homebrew formula and AUR package, `yxu update`, and every Bun API behind `platform.ts`
+
+  Remaining: the first tagged release, and the publishing secrets (npm, tap, AUR).
 
 ## 12. Decisions needed from the owner
 

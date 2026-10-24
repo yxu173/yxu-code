@@ -27,11 +27,18 @@ curl -fsSL https://raw.githubusercontent.com/yxu173/yxu-code/main/install.sh | s
 # or with npm (no Bun needed; picks the right binary for your platform)
 npm install -g yxu
 
+# or Homebrew (macOS/Linux) / AUR (Arch)
+brew install yxu173/tap/yxu
+yay -S yxu-bin
+
 # or from source (needs Bun ≥ 1.3)
 git clone https://github.com/yxu173/yxu-code && cd yxu-code && bun install && bun link
 ```
 
 `install.sh` honours `YXU_VERSION=v0.1.0` (pin a version) and `YXU_INSTALL_DIR`.
+Update with `yxu update`; it replaces the binary after checking its checksum. Use
+`yxu update --check` to only look, or `yxu update --version v0.1.0` to pin a team version.
+npm, Homebrew and AUR installs update through their own package manager.
 
 ## Quick start
 
@@ -209,7 +216,7 @@ streaming text deltas (`includePartialMessages`), conversation resume across tur
 ### Checks
 
 ```sh
-bun test                 # 106 tests, incl. test/tui.test.ts (keys, editor, layout, frames, interaction)
+bun test                 # 113 tests, incl. test/tui.test.ts (keys, editor, layout, frames, interaction)
 bunx tsc --noEmit
 bun scripts/snapshot.ts --at deciding --width 140 --height 46 [--ascii] [--html out.html]
 python3 scripts/pty-drive.py 110 32 <repo> script.json -- bun src/cli.ts tui --demo
@@ -231,9 +238,20 @@ and the interface in a real PTY) on Linux and macOS for every push and pull requ
 
 `.github/workflows/release.yml` then builds binaries for linux-x64/arm64 and darwin-x64/arm64
 (`bun scripts/build-release.ts`), smoke-tests them on native runners, and creates the GitHub
-release with `checksums.txt`. If the `NPM_TOKEN` repository secret is set, it also publishes
-`yxu` plus one `yxu-<os>-<arch>` package per platform to npm. Tags with a `-`, such as
-`v0.1.0-rc.1`, become pre-releases on the npm `next` tag.
+release with `checksums.txt`, the Homebrew formula and the AUR `PKGBUILD`
+(`bun scripts/packaging.ts`).
+
+Optional repository secrets turn on publishing; without them, that step is skipped:
+
+| secret | publishes |
+|---|---|
+| `NPM_TOKEN` | `yxu` plus one `yxu-<os>-<arch>` package per platform on npm |
+| `HOMEBREW_TAP_TOKEN` | `Formula/yxu.rb` to `yxu173/homebrew-tap` (needs a token with push access to that repo) |
+| `AUR_SSH_PRIVATE_KEY` | `yxu-bin` on the AUR (an SSH key registered with your AUR account) |
+
+Tags with a `-`, such as `v0.1.0-rc.1`, become GitHub pre-releases and use the npm `next` tag,
+and they skip Homebrew and the AUR. Pull requests that change the release scripts run the build
+and smoke jobs as a dry run.
 
 A compiled binary uses the `claude` on your PATH as the orchestrator engine; set
 `YXU_CLAUDE_PATH` to use another one. Running from source uses the engine bundled with the

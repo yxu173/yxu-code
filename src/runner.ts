@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { adapters } from "./adapters/index.ts";
 import { collectChanges, createWorktree, removeWorktree, repoRoot, workingDiff, type Worktree } from "./git.ts";
+import { killGroup, start } from "./platform.ts";
 import type { AgentProfile, TaskResult } from "./types.ts";
 
 export interface RunOptions {
@@ -41,14 +42,6 @@ export function runDir(root: string, taskId: string) {
  */
 const liveGroups = new Set<number>();
 
-function killGroup(pid: number, signal: NodeJS.Signals) {
-  try {
-    process.kill(-pid, signal);
-  } catch {
-    // already gone
-  }
-}
-
 export function killAllSubagents(signal: NodeJS.Signals = "SIGTERM") {
   for (const pid of liveGroups) killGroup(pid, signal);
 }
@@ -72,14 +65,7 @@ export async function runTask(opts: RunOptions): Promise<TaskResult> {
   mkdirSync(dir, { recursive: true });
 
   const started = Date.now();
-  const proc = Bun.spawn(argv, {
-    cwd,
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-    detached: true,
-    env: { ...process.env, NO_COLOR: "1" },
-  });
+  const proc = start(argv, { cwd, detached: true, env: { ...process.env, NO_COLOR: "1" } });
   liveGroups.add(proc.pid);
 
   let killedReason: string | undefined;
@@ -93,11 +79,7 @@ export async function runTask(opts: RunOptions): Promise<TaskResult> {
   if (opts.signal?.aborted) onAbort();
   opts.signal?.addEventListener("abort", onAbort, { once: true });
 
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-  const exitCode = await proc.exited;
+  const { code: exitCode, stdout, stderr } = await proc.result;
   liveGroups.delete(proc.pid);
   clearTimeout(timer);
   opts.signal?.removeEventListener("abort", onAbort);
