@@ -109,7 +109,6 @@
       "description": "Local agent CLIs the orchestrator can delegate to"
     },
     "workflows": {
-      "default": {},
       "description": "How the orchestrator works: auto, or a fixed pipeline of steps",
       "type": "object",
       "propertyNames": {
@@ -128,6 +127,10 @@
                   "pipeline"
                 ]
               },
+              "description": {
+                "description": "Shown in /workflow",
+                "type": "string"
+              },
               "allowed_agents": {
                 "type": "array",
                 "items": {
@@ -140,120 +143,42 @@
               "steps": {
                 "type": "array",
                 "items": {
-                  "oneOf": [
-                    {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string",
-                          "pattern": "^[a-z][a-z0-9_-]*$"
-                        },
-                        "type": {
-                          "type": "string",
-                          "const": "plan"
-                        },
-                        "max_tasks": {
-                          "default": 5,
-                          "type": "integer",
-                          "minimum": 1,
-                          "maximum": 12
-                        },
-                        "instructions": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "id",
-                        "type"
+                  "$ref": "#/definitions/__schema0"
+                }
+              },
+              "inputs": {
+                "description": "Values passed with --input name=value or by a command",
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "object",
+                  "properties": {
+                    "description": {
+                      "type": "string"
+                    },
+                    "default": {
+                      "type": [
+                        "string",
+                        "number",
+                        "boolean"
                       ]
                     },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string",
-                          "pattern": "^[a-z][a-z0-9_-]*$"
-                        },
-                        "type": {
-                          "type": "string",
-                          "const": "delegate"
-                        },
-                        "agent": {
-                          "type": "string"
-                        },
-                        "for_each": {
-                          "type": "string"
-                        },
-                        "prompt": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "id",
-                        "type",
-                        "agent"
-                      ]
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string",
-                          "pattern": "^[a-z][a-z0-9_-]*$"
-                        },
-                        "type": {
-                          "type": "string",
-                          "const": "verify"
-                        },
-                        "command": {
-                          "type": "string"
-                        },
-                        "fix_agent": {
-                          "type": "string"
-                        },
-                        "max_rounds": {
-                          "default": 2,
-                          "type": "integer",
-                          "minimum": 1,
-                          "maximum": 10
-                        }
-                      },
-                      "required": [
-                        "id",
-                        "type"
-                      ]
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "id": {
-                          "type": "string",
-                          "pattern": "^[a-z][a-z0-9_-]*$"
-                        },
-                        "type": {
-                          "type": "string",
-                          "const": "review"
-                        },
-                        "fix_agent": {
-                          "type": "string"
-                        },
-                        "max_rounds": {
-                          "default": 3,
-                          "type": "integer",
-                          "minimum": 1,
-                          "maximum": 10
-                        },
-                        "instructions": {
-                          "type": "string"
-                        }
-                      },
-                      "required": [
-                        "id",
-                        "type",
-                        "fix_agent"
-                      ]
+                    "required": {
+                      "type": "boolean"
                     }
-                  ]
+                  }
+                }
+              },
+              "outputs": {
+                "description": "Results reported at the end (templates)",
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string"
                 }
               }
             }
@@ -366,10 +291,607 @@
         }
       }
     },
+    "hooks": {
+      "description": "Shell commands at lifecycle points; they get the event as JSON on stdin",
+      "type": "object",
+      "properties": {
+        "before_run": {
+          "description": "Before a run; a failing command blocks it",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "after_task": {
+          "description": "After each agent task, in its worktree; file changes join the task",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "before_apply": {
+          "description": "Before apply, in the task's worktree; a failing command blocks the apply",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "on_failure": {
+          "description": "After a run that failed",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "on_complete": {
+          "description": "After a run that succeeded",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ui": {
+      "default": {
+        "theme": "instrument",
+        "keys": {},
+        "panel": true,
+        "panel_sections": [
+          "context",
+          "agents",
+          "tasks",
+          "cost"
+        ],
+        "footer": true
+      },
+      "description": "The interactive interface: theme, keys, layout",
+      "type": "object",
+      "properties": {
+        "theme": {
+          "default": "instrument",
+          "description": "instrument, high-contrast, light, mono, or a file in ~/.config/yxu/themes",
+          "type": "string"
+        },
+        "keys": {
+          "default": {},
+          "description": "Rebind interface keys, e.g. { panel: ctrl+b } (see `yxu keys`)",
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "panel": {
+          "default": true,
+          "description": "Open the side panel at start",
+          "type": "boolean"
+        },
+        "panel_sections": {
+          "default": [
+            "context",
+            "agents",
+            "tasks",
+            "cost"
+          ],
+          "description": "Which panel sections to show, in order",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "context",
+              "agents",
+              "tasks",
+              "cost"
+            ]
+          }
+        },
+        "footer": {
+          "default": true,
+          "description": "Show the key hints line",
+          "type": "boolean"
+        }
+      }
+    },
     "version": {
       "description": "Config format version; `yxu config migrate` upgrades old files",
       "type": "number",
       "const": 1
+    }
+  },
+  "definitions": {
+    "__schema0": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]*$"
+            },
+            "description": {
+              "description": "What this step is for (shown while it runs)",
+              "type": "string"
+            },
+            "if": {
+              "description": "Run only when true, e.g. \"{{verify.ok}}\" or \"plan.tasks.length > 3\"",
+              "type": [
+                "string",
+                "boolean"
+              ]
+            },
+            "unless": {
+              "description": "Skip when true",
+              "type": [
+                "string",
+                "boolean"
+              ]
+            },
+            "continue_on_error": {
+              "description": "Record a failure and keep going instead of stopping the workflow",
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "plan"
+            },
+            "max_tasks": {
+              "default": 5,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 12
+            },
+            "instructions": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]*$"
+            },
+            "description": {
+              "description": "What this step is for (shown while it runs)",
+              "type": "string"
+            },
+            "if": {
+              "description": "Run only when true, e.g. \"{{verify.ok}}\" or \"plan.tasks.length > 3\"",
+              "type": [
+                "string",
+                "boolean"
+              ]
+            },
+            "unless": {
+              "description": "Skip when true",
+              "type": [
+                "string",
+                "boolean"
+              ]
+            },
+            "continue_on_error": {
+              "description": "Record a failure and keep going instead of stopping the workflow",
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "delegate"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "for_each": {
+              "type": "string"
+            },
+            "prompt": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "agent"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]*$"
+            },
+            "description": {
+              "description": "What this step is for (shown while it runs)",
+              "type": "string"
+            },
+            "if": {
+              "description": "Run only when true, e.g. \"{{verify.ok}}\" or \"plan.tasks.length > 3\"",
+              "type": [
+                "string",
+                "boolean"
+              ]
+            },
+            "unless": {
+              "description": "Skip when true",
+              "type": [
+                "string",
+                "boolean"
+              ]
+            },
+            "continue_on_error": {
+              "description": "Record a failure and keep going instead of stopping the workflow",
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "verify"
+            },
+            "command": {
+              "type": "string"
+            },
+            "fix_agent": {
+              "type": "string"
+            },
+            "max_rounds": {
+              "default": 2,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            }
+          },
+          "required": [
+            "id",
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]*$"
+            },
+            "description": {
+              "description": "What this step is for (shown while it runs)",
+              "type": "string"
+            },
+            "if": {
+              "description": "Run only when true, e.g. \"{{verify.ok}}\" or \"plan.tasks.length > 3\"",
+              "type": [
+                "string",
+                "boolean"
+              ]
+            },
+            "unless": {
+              "description": "Skip when true",
+              "type": [
+                "string",
+                "boolean"
+              ]
+            },
+            "continue_on_error": {
+              "description": "Record a failure and keep going instead of stopping the workflow",
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "review"
+            },
+            "fix_agent": {
+              "type": "string"
+            },
+            "max_rounds": {
+              "default": 3,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "instructions": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "fix_agent"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]*$"
+            },
+            "description": {
+              "description": "What this step is for (shown while it runs)",
+              "type": "string"
+            },
+            "if": {
+              "description": "Run only when true, e.g. \"{{verify.ok}}\" or \"plan.tasks.length > 3\"",
+              "type": [
+                "string",
+                "boolean"
+              ]
+            },
+            "unless": {
+              "description": "Skip when true",
+              "type": [
+                "string",
+                "boolean"
+              ]
+            },
+            "continue_on_error": {
+              "description": "Record a failure and keep going instead of stopping the workflow",
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "shell"
+            },
+            "command": {
+              "type": "string",
+              "description": "Shell command (a template; values are shell-quoted). Output feeds later steps as {{<id>.output}}"
+            },
+            "in": {
+              "default": "result",
+              "description": "result: the work so far (task worktree, or the repo before any change); repo: your checkout",
+              "type": "string",
+              "enum": [
+                "result",
+                "repo"
+              ]
+            },
+            "timeout": {
+              "type": [
+                "string",
+                "number"
+              ]
+            },
+            "env": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "command"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]*$"
+            },
+            "description": {
+              "description": "What this step is for (shown while it runs)",
+              "type": "string"
+            },
+            "if": {
+              "description": "Run only when true, e.g. \"{{verify.ok}}\" or \"plan.tasks.length > 3\"",
+              "type": [
+                "string",
+                "boolean"
+              ]
+            },
+            "unless": {
+              "description": "Skip when true",
+              "type": [
+                "string",
+                "boolean"
+              ]
+            },
+            "continue_on_error": {
+              "description": "Record a failure and keep going instead of stopping the workflow",
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "gate"
+            },
+            "message": {
+              "type": "string",
+              "description": "Question shown before continuing (a template)"
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "message"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]*$"
+            },
+            "description": {
+              "description": "What this step is for (shown while it runs)",
+              "type": "string"
+            },
+            "if": {
+              "description": "Run only when true, e.g. \"{{verify.ok}}\" or \"plan.tasks.length > 3\"",
+              "type": [
+                "string",
+                "boolean"
+              ]
+            },
+            "unless": {
+              "description": "Skip when true",
+              "type": [
+                "string",
+                "boolean"
+              ]
+            },
+            "continue_on_error": {
+              "description": "Record a failure and keep going instead of stopping the workflow",
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "parallel"
+            },
+            "steps": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/__schema0"
+                  }
+                ]
+              },
+              "description": "Steps run at the same time; their changes are combined"
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "steps"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]*$"
+            },
+            "description": {
+              "description": "What this step is for (shown while it runs)",
+              "type": "string"
+            },
+            "if": {
+              "description": "Run only when true, e.g. \"{{verify.ok}}\" or \"plan.tasks.length > 3\"",
+              "type": [
+                "string",
+                "boolean"
+              ]
+            },
+            "unless": {
+              "description": "Skip when true",
+              "type": [
+                "string",
+                "boolean"
+              ]
+            },
+            "continue_on_error": {
+              "description": "Record a failure and keep going instead of stopping the workflow",
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "loop"
+            },
+            "steps": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "allOf": [
+                  {
+                    "$ref": "#/definitions/__schema0"
+                  }
+                ]
+              },
+              "description": "Steps repeated in order each round"
+            },
+            "until": {
+              "description": "Stop once this is true (checked after each round)",
+              "type": [
+                "string",
+                "boolean"
+              ]
+            },
+            "max_rounds": {
+              "default": 3,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "steps"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_-]*$"
+            },
+            "description": {
+              "description": "What this step is for (shown while it runs)",
+              "type": "string"
+            },
+            "if": {
+              "description": "Run only when true, e.g. \"{{verify.ok}}\" or \"plan.tasks.length > 3\"",
+              "type": [
+                "string",
+                "boolean"
+              ]
+            },
+            "unless": {
+              "description": "Skip when true",
+              "type": [
+                "string",
+                "boolean"
+              ]
+            },
+            "continue_on_error": {
+              "description": "Record a failure and keep going instead of stopping the workflow",
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string",
+              "const": "workflow"
+            },
+            "workflow": {
+              "type": "string",
+              "description": "Name of a pipeline workflow to run here"
+            },
+            "inputs": {
+              "description": "Inputs for that workflow (templates)",
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "goal": {
+              "description": "Goal for that workflow (template; default: this workflow's goal)",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "workflow"
+          ]
+        }
+      ]
     }
   }
 }

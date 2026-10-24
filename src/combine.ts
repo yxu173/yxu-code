@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { prompt, resolverBase } from "./prompts.ts";
 import { join } from "node:path";
 import { createWorktree, git, removeWorktree, tryGit, YXU_IDENTITY } from "./git.ts";
 import { newTaskId, runDir, runTask, writeTaskRecord } from "./runner.ts";
@@ -104,12 +105,10 @@ export async function combineTasks(opts: CombineOptions): Promise<CombineResult>
       worktree: wt,
       signal: opts.signal,
       onStart: (rid) => opts.onResolveStart?.(rid),
-      prompt: `You are resolving a git merge conflict in the current directory. Several tasks changed the same code in parallel:
-${intents.join("\n")}
-
-These files have conflict markers (<<<<<<<, =======, >>>>>>>): ${conflicts.join(", ")}
-Edit each file so it keeps the intent of BOTH sides, and remove every conflict marker.
-Do not run git commands (no add, commit, or merge). Finish with a one-paragraph summary.`,
+      prompt: prompt(root, "conflict-resolver", resolverBase(intents.join("\n"), conflicts.join(", ")), {
+        intents: intents.join("\n"),
+        conflicts: conflicts.join(", "),
+      }),
     });
     usage.inputTokens += resolve.usage.inputTokens;
     usage.outputTokens += resolve.usage.outputTokens;

@@ -223,7 +223,7 @@ describe("renderFrame", () => {
     const text = strip(frame(color, 120, 50, (s) => s.set({ helpOpen: true })).rows.join("\n"));
     expect(text).toContain("ctrl+o");
     expect(text).toContain("decision required");
-    expect(text).toContain("/apply <task>");
+    expect(text).toContain("/run <workflow>"); // the list scrolls; later commands are below the fold
   });
 
   test("tiny terminals get a clear message instead of a broken layout", () => {
@@ -348,6 +348,7 @@ describe("App interaction", () => {
     app.input("v");
     expect(screen()).toContain("diff t1");
     app.input("a");
+    await tick(); // apply is async (before_apply hooks may run)
     expect(applied).toEqual(["t1"]);
     expect(screen()).toContain("Applied. merged yxu/t1 into main.");
     expect(["complete", "ready"]).toContain(app.store.state.status);

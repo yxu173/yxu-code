@@ -72,7 +72,7 @@ describe("registry", () => {
   test("every command runs without arguments and never throws", () => {
     const { app, done } = setup();
     for (const c of COMMANDS) {
-      if (c.name === "quit") continue;
+      if (c.name === "quit" || c.name === "doctor") continue; // doctor runs the real agent CLIs
       expect(() => app.runCommand(`/${c.name}`)).not.toThrow();
     }
     app.store.set({ helpOpen: false });
@@ -84,7 +84,7 @@ describe("palette", () => {
   test("/ lists every command; typing filters by name first", () => {
     const { app, done } = setup();
     expect(paletteFor(app, "/")!.items.map((i) => i.value)).toEqual(COMMANDS.map((c) => c.name));
-    expect(paletteFor(app, "/co")!.items.map((i) => i.value)).toEqual(["config", "concurrency", "context", "compact"]);
+    expect(paletteFor(app, "/co")!.items.map((i) => i.value)).toEqual(["config", "commands", "concurrency", "context", "compact"]);
     expect(paletteFor(app, "/hello world")).toBeUndefined(); // unknown command: no palette
     expect(paletteFor(app, "not a command")).toBeUndefined();
     done();

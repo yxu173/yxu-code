@@ -12,9 +12,17 @@ export interface VerifyResult {
 const MAX_OUTPUT = 6_000;
 
 /** Run a check command (tests, lint, build) in a directory. */
-export async function runVerify(cwd: string, command: string, timeoutMs: number, signal?: AbortSignal): Promise<VerifyResult> {
+export async function runVerify(
+  cwd: string,
+  command: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+  env: Record<string, string> = {},
+  stdin?: string,
+): Promise<VerifyResult> {
   const started = Date.now();
-  const proc = start(["sh", "-c", `${command} 2>&1`], { cwd, detached: true, env: { ...process.env, CI: "1", NO_COLOR: "1" } });
+  // A subshell, so `2>&1` covers the whole command list.
+  const proc = start(["sh", "-c", `(${command}\n) 2>&1`], { cwd, detached: true, stdin, env: { ...process.env, CI: "1", NO_COLOR: "1", ...env } });
   let timedOut = false;
   const kill = () => killGroup(proc.pid, "SIGKILL");
   const timer = setTimeout(() => {

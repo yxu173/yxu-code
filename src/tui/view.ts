@@ -309,7 +309,7 @@ export const KEY_HELP: [string, string][] = [
 /** Help lists the same commands the palette runs (one registry, no drift). */
 export const COMMAND_HELP: [string, string][] = COMMANDS.map((c) => [`/${c.name}${c.usage ? ` ${c.usage}` : ""}`, c.description]);
 
-function helpRows(w: number, ctx: ViewContext): Line[] {
+function helpRows(state: State, w: number, ctx: ViewContext): Line[] {
   const g = ctx.theme.glyphs;
   const legend: [string, Style, string][] = [
     [g.you, { fg: "cyan" }, "your message"],
@@ -326,6 +326,11 @@ function helpRows(w: number, ctx: ViewContext): Line[] {
   rows.push([], [s(" "), s(spaced("commands", ctx.theme.ascii), { fg: "violet" })]);
   rows.push([s("   "), s("type / in the message box to browse and complete these", { fg: "faint" })]);
   for (const [k, d] of COMMAND_HELP) rows.push([s("   "), s(truncateText(k, 30).padEnd(32), { fg: "ivory" }), s(d, { fg: "dim" })]);
+  if (state.customHelp?.length) {
+    rows.push([], [s(" "), s(spaced("your commands", ctx.theme.ascii), { fg: "violet" })]);
+    rows.push([s("   "), s("from .yxu/commands and ~/.config/yxu/commands", { fg: "faint" })]);
+    for (const [k, d] of state.customHelp) rows.push([s("   "), s(truncateText(k, 30).padEnd(32), { fg: "ivory" }), s(d, { fg: "dim" })]);
+  }
   rows.push([], [s(" "), s(spaced("signs", ctx.theme.ascii), { fg: "violet" })]);
   for (const [gl, st, d] of legend) rows.push([s("   "), s(gl, st), s("  "), s(d, { fg: "dim" })]);
   rows.push([], [s("   "), s("press ? or esc to close", { fg: "faint" })]);
@@ -341,8 +346,7 @@ export function panelRows(state: State, w: number, h: number, ctx: ViewContext):
   const kv = (k: string, v: string, st: Style = { fg: "ivory" }): Line => truncate([s(k.padEnd(10), { fg: "dim" }), s(v, st)], inner);
   const title = (t: string, extra?: Line): Line => [s(spaced(t, ctx.theme.ascii), { fg: "violet" }), ...(extra ?? [])];
 
-  const rows: Line[] = [
-    [],
+  const ctxRows: Line[] = [
     title("context"),
     kv("workflow", `${c.workflow} · ${c.mode}`),
     kv("model", c.model),
@@ -360,7 +364,7 @@ export function panelRows(state: State, w: number, h: number, ctx: ViewContext):
     const cells = 8;
     const filled = Math.min(cells, Math.round((u.tokens / u.max) * cells));
     const hot = u.percentage / 100 >= c.compact.warnAt;
-    rows.push(
+    ctxRows.push(
       truncate(
         [
           s("window".padEnd(10), { fg: "dim" }),
@@ -373,7 +377,7 @@ export function panelRows(state: State, w: number, h: number, ctx: ViewContext):
       ),
     );
   }
-  rows.push(
+  ctxRows.push(
     kv(
       "compact",
       c.compact.auto ? `auto · ${c.compact.window === "auto" ? "model window" : formatTokens(c.compact.window)}` : "off",
@@ -385,31 +389,32 @@ export function panelRows(state: State, w: number, h: number, ctx: ViewContext):
     c.hasNotes ? "notes" : "",
     c.projectInstructions ? "" : "no CLAUDE.md",
   ].filter(Boolean);
-  if (extras.length) rows.push(kv("added", extras.join(" · "), { fg: "violet" }));
-  if (c.verify) rows.push(kv("verify", c.verify, { fg: "dim" }));
+  if (extras.length) ctxRows.push(kv("added", extras.join(" · "), { fg: "violet" }));
+  if (c.verify) ctxRows.push(kv("verify", c.verify, { fg: "dim" }));
 
-  rows.push([], title("agents", [s(`  ${state.activeSlots}/${c.concurrency} active`, { fg: "faint" })]));
-  for (const a of c.agents) rows.push(truncate([s(a.name.padEnd(13), { fg: "ivory" }), s(`${a.cli}${a.model ? ` · ${a.model.split("/").at(-1)}` : ""}`, { fg: "dim" })], inner));
+  const agentRows: Line[] = [title("agents", [s(`  ${state.activeSlots}/${c.concurrency} active`, { fg: "faint" })])];
+  for (const a of c.agents) agentRows.push(truncate([s(a.name.padEnd(13), { fg: "ivory" }), s(`${a.cli}${a.model ? ` · ${a.model.split("/").at(-1)}` : ""}`, { fg: "dim" })], inner));
 
-  rows.push([], title("tasks"));
-  if (!state.tasks.length) rows.push([s("none yet", { fg: "faint" })]);
+  const taskRows: Line[] = [title("tasks")];
+  if (!state.tasks.length) taskRows.push([s("none yet", { fg: "faint" })]);
   const tasks = state.tasks.slice(-12);
   for (const t of tasks) {
     const glyph = t.state === "running" ? pulse(ctx) : t.state === "failed" ? g.fault : t.state === "discarded" ? g.idle : g.ok;
     const st: Style = t.state === "running" ? { fg: "cyan" } : t.state === "failed" ? { fg: "fault" } : { fg: "dim" };
     const tag = t.pending ? "pending" : t.state === "running" ? "running" : t.state;
-    rows.push(
+    taskRows.push(
       truncate(
         [s(glyph, st), s(" "), s(`${shortId(t.taskId)} `.padEnd(7), { fg: "ivory" }), s(`${t.agent} `.padEnd(10), { fg: "dim" }), s(tag, t.pending ? { fg: "amber" } : { fg: "faint" })],
         inner,
       ),
     );
   }
-  if (state.tasks.length > tasks.length) rows.push([s(`${g.ellipsis} ${state.tasks.length - tasks.length} earlier`, { fg: "faint" })]);
+  if (state.tasks.length > tasks.length) taskRows.push([s(`${g.ellipsis} ${state.tasks.length - tasks.length} earlier`, { fg: "faint" })]);
 
-  rows.push([], title("cost"));
-  rows.push(kv("orchestr.", `$${state.cost.orchestrator.toFixed(4)}`, { fg: "dim" }));
-  rows.push(kv("agents", `$${state.cost.subagents.toFixed(4)}`, { fg: "dim" }));
+  const costRows: Line[] = [title("cost"), kv("orchestr.", `$${state.cost.orchestrator.toFixed(4)}`, { fg: "dim" }), kv("agents", `$${state.cost.subagents.toFixed(4)}`, { fg: "dim" })];
+
+  const sections: Record<string, Line[]> = { context: ctxRows, agents: agentRows, tasks: taskRows, cost: costRows };
+  const rows: Line[] = (state.layout?.sections ?? ["context", "agents", "tasks", "cost"]).flatMap((name) => [[], ...(sections[name] ?? [])]);
 
   return rows.slice(0, h).map((r) => [s(` ${g.v} `, { fg: "faint", bg: "panel" }), ...r.map((x) => ({ ...x, bg: "panel" as const }))]);
 }
@@ -443,6 +448,27 @@ export function decisionRows(state: State, w: number, ctx: ViewContext): Line[] 
   const framed = lines.map((l) => [s(`${g.vh} `, amber), ...pad(l, inner), s(` ${g.vh}`, amber)]);
   const bottom: Line = [s(g.blh + g.hh.repeat(Math.max(0, w - 2)) + g.brh, amber)];
   return [top, ...framed, bottom];
+}
+
+/** A workflow gate: the run waits until the user continues or stops it. */
+export function gateRows(state: State, w: number, ctx: ViewContext): Line[] {
+  const gt = state.gate;
+  if (!gt) return [];
+  const g = ctx.theme.glyphs;
+  const amber: Style = { fg: "amber" };
+  const inner = w - 4;
+  const label: Line = [s(` ${g.attention} `, { fg: "amber", bold: true }), s("APPROVAL REQUIRED", { fg: "amber", bold: true }), s(" ")];
+  const top: Line = [s(g.tlh + g.hh, amber), ...label, s(g.hh.repeat(Math.max(0, w - lineWidth(label) - 3)) + g.trh, amber)];
+  const lines = [
+    ...gt.message.split("\n").flatMap((m) => wrap([s(m, { fg: "ivory" })], inner)),
+    [s(`step ${gt.stepId} · the workflow waits for you`, { fg: "dim" })],
+    ...wrap(
+      [s("[y]", { fg: "amber", bold: true }), s(" continue   ", { fg: "ivory" }), s("[n]", { fg: "amber", bold: true }), s(" stop the workflow", { fg: "ivory" })],
+      inner,
+    ),
+  ];
+  const framed = lines.map((l) => [s(`${g.vh} `, amber), ...pad(l, inner), s(` ${g.vh}`, amber)]);
+  return [top, ...framed, [s(g.blh + g.hh.repeat(Math.max(0, w - 2)) + g.brh, amber)]];
 }
 
 // ── slash-command palette ────────────────────────────────────────────────────
@@ -530,7 +556,9 @@ function footerRow(state: State, w: number, ctx: ViewContext): Line {
     state.palette
       ? [["↑↓", "select"], ["tab", "complete"], ["enter", "run"], ["esc", "close"]]
       : state.helpOpen
-      ? [["esc", "close help"]]
+      ? [["↑↓ pgup/pgdn", "scroll"], ["esc", "close help"]]
+      : state.gate
+      ? [["y", "continue"], ["n", "stop the workflow"], ["pgup/pgdn", "scroll"], ["?", "help"]]
       : state.status === "deciding"
         ? [["a", "apply"], ["v", "diff"], ["l", "later"], ["x", "discard"], ["?", "help"]]
         : state.status === "working" || state.status === "cancelling"
@@ -574,7 +602,7 @@ export function renderFrame(state: State, editor: Editor, width: number, height:
   const headerRows: Line[] = [header(state, width, ctx), rule(width, g)];
   // The palette takes the decision box's place while it is open (the decision returns after).
   const palette = paletteRows(state, L.main, ctx);
-  const decision = palette.length ? palette : decisionRows(state, L.main, ctx);
+  const decision = palette.length ? palette : state.gate ? gateRows(state, L.main, ctx) : decisionRows(state, L.main, ctx);
   const prefix = `${state.status === "working" ? g.dot : g.you} `;
   const input = inputRows(editor, L.main, 3); // " ▹ " lead
   const maxInput = Math.min(MAX_INPUT_ROWS, Math.max(1, Math.floor(height / 4)));
@@ -590,13 +618,16 @@ export function renderFrame(state: State, editor: Editor, width: number, height:
     if (isEmpty && i === 0) inputBlock.push([lead, s(placeholder(state), { fg: "faint" })]);
     else inputBlock.push([lead, s(text, { fg: "ivory" })]);
   }
-  const footer: Line[] = [footerRow(state, width, ctx)];
+  // ui.footer: false hides the key hints (flash messages still show).
+  const footer: Line[] = state.layout?.footer === false && !state.flash ? [] : [footerRow(state, width, ctx)];
 
   const bodyH = height - headerRows.length - decision.length - inputBlock.length - footer.length;
   const body: Line[] = [];
 
   if (state.helpOpen) {
-    body.push(...helpRows(L.main, ctx).slice(0, bodyH));
+    const all = helpRows(state, L.main, ctx);
+    const off = Math.min(state.helpScroll ?? 0, Math.max(0, all.length - bodyH));
+    body.push(...all.slice(off, off + bodyH));
   } else if (!state.entries.length) {
     body.push(...welcome(state, L.main, bodyH, ctx).slice(0, bodyH));
   } else {

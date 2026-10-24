@@ -1,5 +1,9 @@
+import { existsSync } from "node:fs";
 import { readTaskRecord, taskAncestors, type TaskRecord } from "./combine.ts";
-import { branchFor, git, removeWorktree, tryGit } from "./git.ts";
+import type { Config } from "./config.ts";
+import { branchFor, git, removeWorktree, tryGit, worktreeFor } from "./git.ts";
+import { formatHookFailure, hooksFor, runHooks } from "./hooks.ts";
+import type { TaskResult } from "./types.ts";
 
 export type ActionResult = { ok: true; message: string } | { ok: false; message: string; hint?: string };
 
@@ -34,6 +38,26 @@ export function applyTask(root: string, id: string): ActionResult {
   // Tasks this one was built from (build_on chains, combine parents) are merged too; clean them up.
   for (const a of taskAncestors(root, id)) removeWorktree(root, a, true);
   return { ok: true, message: `merged ${branchFor(id)} into ${git(root, "branch", "--show-current")}` };
+}
+
+/** Run the before_apply hooks in the task's worktree, then apply. A failing hook blocks the apply. */
+export async function applyWithHooks(cfg: Config, root: string, id: string, signal?: AbortSignal): Promise<ActionResult> {
+  if (hooksFor(cfg, "before_apply").length) {
+    const r = readTaskRecord(root, id);
+    const wt = worktreeFor(root, id);
+    if (r?.branch && existsSync(wt)) {
+      const h = await runHooks(cfg, "before_apply", { task: taskData(r) }, { cwd: wt, signal });
+      if (!h.ok) {
+        return { ok: false, message: `${formatHookFailure("before_apply", h.failed[0]!)}\nNothing was applied.`, hint: "fix the task (or the hook), then apply again" };
+      }
+    }
+  }
+  return applyTask(root, id);
+}
+
+/** What hooks see about a task: {{task.id}}, {{task.files}}, … */
+export function taskData(r: TaskRecord | TaskResult) {
+  return { id: r.taskId, agent: r.agent, ok: r.ok, branch: r.branch, files: r.filesChanged, summary: r.summary, error: r.error };
 }
 
 export function discardTask(root: string, id: string): ActionResult {
