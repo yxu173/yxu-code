@@ -1,0 +1,84 @@
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+
+export function git(cwd: string, ...args: string[]): string {
+  const p = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  if (p.exitCode !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${p.stderr.toString().trim()}`);
+  }
+  return p.stdout.toString().trim();
+}
+
+/** Like git() but returns failure instead of throwing (for merges that may conflict). */
+export function tryGit(cwd: string, ...args: string[]): { ok: boolean; out: string; err: string } {
+  try {
+    const p = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+    return { ok: p.exitCode === 0, out: p.stdout.toString().trim(), err: p.stderr.toString().trim() };
+  } catch (e) {
+    // e.g. cwd vanished: report as a failure rather than throwing.
+    return { ok: false, out: "", err: (e as Error).message };
+  }
+}
+
+/** Identity for commits yxu makes in task worktrees. */
+export const YXU_IDENTITY = ["-c", "user.name=yxu", "-c", "user.email=yxu@localhost"];
+
+export function repoRoot(cwd: string): string {
+  return git(cwd, "rev-parse", "--show-toplevel");
+}
+
+export const branchFor = (taskId: string) => `yxu/${taskId}`;
+export const worktreeFor = (root: string, taskId: string) => join(root, ".yxu", "worktrees", taskId);
+
+/** Keep .yxu/ out of the user's `git status` without touching their .gitignore. */
+export function excludeYxuDir(root: string) {
+  const common = resolve(root, git(root, "rev-parse", "--git-common-dir"));
+  const exclude = join(common, "info", "exclude");
+  const current = existsSync(exclude) ? readFileSync(exclude, "utf8") : "";
+  if (!current.split("\n").includes(".yxu/")) {
+    appendFileSync(exclude, `${current && !current.endsWith("\n") ? "\n" : ""}.yxu/\n`);
+  }
+}
+
+export interface Worktree {
+  path: string;
+  branch: string;
+  base: string;
+}
+
+/** Create a worktree on a new branch starting at `baseRef` (default: current HEAD). */
+export function createWorktree(root: string, taskId: string, baseRef = "HEAD"): Worktree {
+  excludeYxuDir(root);
+  const path = worktreeFor(root, taskId);
+  const branch = branchFor(taskId);
+  const base = git(root, "rev-parse", `${baseRef}^{commit}`);
+  git(root, "worktree", "add", "-q", "-b", branch, path, base);
+  return { path, branch, base };
+}
+
+/** Commit whatever the agent left in the worktree and return the diff against base. */
+export function collectChanges(wt: Worktree, message: string): { diff: string; files: string[] } {
+  git(wt.path, "add", "-A");
+  if (git(wt.path, "status", "--porcelain")) {
+    git(wt.path, ...YXU_IDENTITY, "commit", "-q", "--no-verify", "-m", message);
+  }
+  const diff = git(wt.path, "diff", wt.base, "HEAD");
+  const files = git(wt.path, "diff", "--name-only", wt.base, "HEAD").split("\n").filter(Boolean);
+  return { diff, files };
+}
+
+/** Uncommitted changes in a plain directory (no-worktree mode). */
+export function workingDiff(cwd: string): { diff: string; files: string[] } {
+  git(cwd, "add", "-A", "-N");
+  const diff = git(cwd, "diff", "HEAD");
+  const files = git(cwd, "diff", "--name-only", "HEAD").split("\n").filter(Boolean);
+  return { diff, files };
+}
+
+export function removeWorktree(root: string, taskId: string, deleteBranch: boolean) {
+  const path = worktreeFor(root, taskId);
+  if (existsSync(path)) git(root, "worktree", "remove", "--force", path);
+  if (deleteBranch && git(root, "branch", "--list", branchFor(taskId))) {
+    git(root, "branch", "-D", branchFor(taskId));
+  }
+}

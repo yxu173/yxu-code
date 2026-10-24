@@ -1,0 +1,213 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { combineTasks } from "./combine.ts";
+import { toProfile, type Config } from "./config.ts";
+import { branchFor, git, removeWorktree, worktreeFor } from "./git.ts";
+import { runTask, Semaphore } from "./runner.ts";
+import type { TaskResult } from "./types.ts";
+import { formatVerify, runVerify, type VerifyResult } from "./verify.ts";
+
+export interface OpsHooks {
+  onDelegateStart?: (info: { taskId: string; agent: string; model?: string; task: string; buildOn?: string }) => void;
+  onDelegateEnd?: (result: TaskResult) => void;
+  onCombineStart?: (taskIds: string[]) => void;
+  onConflict?: (files: string[], taskId: string) => void;
+  onCombineEnd?: (result: TaskResult) => void;
+  onVerifyStart?: (command: string, taskId?: string) => void;
+  onVerifyEnd?: (result: VerifyResult, taskId?: string) => void;
+  onDiscard?: (taskId: string) => void;
+}
+
+export type SessionTask = TaskResult & { prompt: string; parents: string[]; discarded?: boolean };
+
+/** Tasks produced during one orchestrator session, in order. */
+export class Session {
+  tasks = new Map<string, SessionTask>();
+  /** Tasks that still have reviewable changes on a branch. */
+  pending() {
+    return [...this.tasks.values()].filter((t) => t.branch && !t.discarded);
+  }
+  /** Pending tasks no other pending task builds on: these are what the user applies. */
+  tips() {
+    const pending = this.pending();
+    return pending.filter((t) => !pending.some((o) => o.parents.includes(t.taskId)));
+  }
+  /** Number of tasks folded into this one (transitively). */
+  ancestorCount(id: string): number {
+    const seen = new Set<string>();
+    const walk = (tid: string) => {
+      for (const p of this.tasks.get(tid)?.parents ?? []) {
+        if (!seen.has(p)) {
+          seen.add(p);
+          walk(p);
+        }
+      }
+    };
+    walk(id);
+    return seen.size;
+  }
+  /** Persist a JSON snapshot (diffs omitted) so other processes can read the outcome. */
+  save(path: string, meta: Record<string, unknown> = {}) {
+    mkdirSync(dirname(path), { recursive: true });
+    const tasks = [...this.tasks.values()].map(({ diff, ...t }) => t);
+    const tips = this.tips().map((t) => ({ taskId: t.taskId, agent: t.agent, includes: this.ancestorCount(t.taskId) }));
+    writeFileSync(path, JSON.stringify({ ...meta, tips, tasks }, null, 2));
+  }
+}
+
+export const SUBAGENT_PREAMBLE = `You are a coding subagent. Complete exactly the task below in the current directory.
+- Make the code changes directly. Do not commit; changes are collected automatically.
+- Do not ask questions; make reasonable assumptions and state them.
+- Stay within the scope of the task; other agents may be editing other parts of the code in parallel.
+- Finish with a short summary: what you changed, any assumptions, and anything left undone.
+
+TASK:
+`;
+
+function truncate(diff: string, max: number): string {
+  if (diff.length <= max) return diff;
+  return `${diff.slice(0, max)}\n… [diff truncated: ${diff.length - max} more chars; call get_diff for the full diff]`;
+}
+
+/** Everything yxu can do with tasks; shared by the orchestrator tools and the pipeline engine. */
+export class TaskOps {
+  readonly slots: Semaphore;
+  readonly allowed: string[];
+
+  constructor(
+    readonly cfg: Config,
+    readonly root: string,
+    readonly session: Session,
+    readonly opts: { allowedAgents?: string[]; signal?: AbortSignal; hooks?: OpsHooks; onChange?: () => void } = {},
+  ) {
+    this.slots = new Semaphore(cfg.settings.concurrency);
+    this.allowed = opts.allowedAgents ?? Object.keys(cfg.agents);
+  }
+
+  private get hooks() {
+    return this.opts.hooks ?? {};
+  }
+
+  /** Validate an agent + build_on; returns the base ref to start from, or an error. */
+  check(agent: string, buildOn?: string): { baseRef?: string } | { error: string } {
+    if (!this.cfg.agents[agent] || !this.allowed.includes(agent)) {
+      return { error: `Unknown or disallowed agent "${agent}". Allowed: ${this.allowed.join(", ")}` };
+    }
+    if (!buildOn) return {};
+    const prev = this.session.tasks.get(buildOn);
+    if (!prev) return { error: `Unknown task_id "${buildOn}".` };
+    if (prev.discarded) return { error: `Task ${buildOn} was discarded.` };
+    return { baseRef: prev.branch }; // undefined when the earlier task made no changes → start from HEAD
+  }
+
+  async delegate(agent: string, task: string, buildOn?: string): Promise<TaskResult> {
+    const base = this.check(agent, buildOn);
+    if ("error" in base) throw new Error(base.error);
+    return this.slots.run(async () => {
+      if (this.opts.signal?.aborted) throw new Error("run cancelled");
+      const profile = toProfile(this.cfg.agents[agent]!);
+      const result = await runTask({
+        agentName: agent,
+        profile,
+        prompt: SUBAGENT_PREAMBLE + task,
+        title: task,
+        cwd: this.root,
+        baseRef: base.baseRef,
+        signal: this.opts.signal,
+        onStart: (taskId) => this.hooks.onDelegateStart?.({ taskId, agent, model: profile.model, task, buildOn }),
+      });
+      this.session.tasks.set(result.taskId, { ...result, prompt: task, parents: buildOn ? [buildOn] : [] });
+      this.hooks.onDelegateEnd?.(result);
+      this.opts.onChange?.();
+      return result;
+    });
+  }
+
+  /** Run tasks concurrently (bounded by the semaphore). Validates all before starting any. */
+  async delegateMany(tasks: { agent: string; task: string; buildOn?: string }[]) {
+    for (const t of tasks) {
+      const base = this.check(t.agent, t.buildOn);
+      if ("error" in base) throw new Error(`Nothing was started. ${base.error}`);
+    }
+    return Promise.allSettled(tasks.map((t) => this.delegate(t.agent, t.task, t.buildOn)));
+  }
+
+  async combine(taskIds: string[], resolver?: string) {
+    for (const id of taskIds) {
+      const t = this.session.tasks.get(id);
+      if (!t) throw new Error(`Unknown task_id "${id}".`);
+      if (t.discarded || !t.branch) throw new Error(`Task ${id} has no changes to combine.`);
+    }
+    const resolverName = resolver ?? this.cfg.settings.resolver;
+    if (resolverName && !this.cfg.agents[resolverName]) throw new Error(`Unknown resolver agent "${resolverName}".`);
+    this.hooks.onCombineStart?.(taskIds);
+    const result = await this.slots.run(() =>
+      combineTasks({
+        root: this.root,
+        taskIds,
+        resolver: resolverName ? { name: resolverName, profile: toProfile(this.cfg.agents[resolverName]!) } : undefined,
+        signal: this.opts.signal,
+        onConflict: this.hooks.onConflict,
+      }),
+    );
+    if (result.ok) this.session.tasks.set(result.taskId, { ...result, prompt: result.summary, parents: taskIds });
+    this.hooks.onCombineEnd?.(result);
+    this.opts.onChange?.();
+    return result;
+  }
+
+  /** Run the verify command in a task's worktree (or the user's checkout when no task is given). */
+  async verify(taskId?: string, command?: string): Promise<VerifyResult> {
+    const cmd = command ?? this.cfg.settings.verify;
+    if (!cmd) throw new Error("No verify command: pass one, or set settings.verify in yxu.yaml.");
+    let cwd = this.root;
+    if (taskId) {
+      const t = this.session.tasks.get(taskId);
+      if (!t) throw new Error(`Unknown task_id "${taskId}".`);
+      if (t.branch && !t.discarded) cwd = worktreeFor(this.root, taskId);
+    }
+    this.hooks.onVerifyStart?.(cmd, taskId);
+    const result = await runVerify(cwd, cmd, this.cfg.settings.verify_timeout, this.opts.signal);
+    this.hooks.onVerifyEnd?.(result, taskId);
+    return result;
+  }
+
+  discard(taskId: string) {
+    const t = this.session.tasks.get(taskId);
+    if (!t) throw new Error(`Unknown task_id "${taskId}".`);
+    const dependents = this.session.pending().filter((p) => p.parents.includes(taskId));
+    if (dependents.some((d) => d.agent !== "combine")) {
+      throw new Error(`Task ${taskId} has pending tasks built on it; discard those first.`);
+    }
+    // A combined task already contains its parents' commits, so dropping the parent branches is safe.
+    removeWorktree(this.root, taskId, true);
+    t.discarded = true;
+    this.hooks.onDiscard?.(taskId);
+    this.opts.onChange?.();
+  }
+
+  /** Diff of a task alone, or cumulative from the user's HEAD. */
+  diff(taskId: string, cumulative = false): string {
+    const t = this.session.tasks.get(taskId);
+    if (!t) throw new Error(`Unknown task_id "${taskId}".`);
+    if (!t.branch) return "";
+    return cumulative ? git(this.root, "diff", `HEAD...${branchFor(taskId)}`) : t.diff;
+  }
+
+  format(r: TaskResult, extra: string[] = []): string {
+    return [
+      `task_id: ${r.taskId}`,
+      `status: ${r.ok ? "success" : "failed"}`,
+      r.error ? `error: ${r.error}` : undefined,
+      ...extra,
+      `duration: ${(r.durationMs / 1000).toFixed(0)}s`,
+      `files_changed: ${r.filesChanged.join(", ") || "(none)"}`,
+      `summary:\n${r.summary || "(none)"}`,
+      r.diff ? `diff:\n${truncate(r.diff, this.cfg.settings.max_diff_chars)}` : undefined,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  formatVerify = formatVerify;
+}

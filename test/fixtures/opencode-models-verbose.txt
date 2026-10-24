@@ -1,0 +1,398 @@
+opencode/beam-free
+{
+  "id": "beam-free",
+  "providerID": "opencode",
+  "name": "Beam Free",
+  "family": "beam",
+  "api": {
+    "id": "beam-free",
+    "url": "https://opencode.ai/inference/openai/v1",
+    "npm": "@ai-sdk/openai-compatible"
+  },
+  "status": "active",
+  "headers": {},
+  "options": {},
+  "cost": {
+    "input": 0,
+    "output": 0,
+    "cache": {
+      "read": 0,
+      "write": 0
+    }
+  },
+  "limit": {
+    "context": 1048576,
+    "output": 131072
+  },
+  "capabilities": {
+    "temperature": true,
+    "reasoning": true,
+    "attachment": false,
+    "toolcall": true,
+    "input": {
+      "text": true,
+      "audio": false,
+      "image": false,
+      "video": false,
+      "pdf": false
+    },
+    "output": {
+      "text": true,
+      "audio": false,
+      "image": false,
+      "video": false,
+      "pdf": false
+    },
+    "interleaved": {
+      "field": "reasoning_content"
+    }
+  },
+  "release_date": "2026-10-05",
+  "variants": {
+    "low": {
+      "reasoningEffort": "low"
+    },
+    "medium": {
+      "reasoningEffort": "medium"
+    },
+    "high": {
+      "reasoningEffort": "high"
+    },
+    "xhigh": {
+      "reasoningEffort": "xhigh"
+    },
+    "max": {
+      "reasoningEffort": "max"
+    }
+  }
+}
+opencode/big-pickle
+{
+  "id": "big-pickle",
+  "providerID": "opencode",
+  "name": "Big Pickle",
+  "family": "big-pickle",
+  "api": {
+    "id": "big-pickle",
+    "url": "https://opencode.ai/inference/openai/v1",
+    "npm": "@ai-sdk/openai-compatible"
+  },
+  "status": "active",
+  "headers": {},
+  "options": {},
+  "cost": {
+    "input": 0,
+    "output": 0,
+    "cache": {
+      "read": 0,
+      "write": 0
+    }
+  },
+  "limit": {
+    "context": 200000,
+    "input": 160000,
+    "output": 32000
+  },
+  "capabilities": {
+    "temperature": true,
+    "reasoning": true,
+    "attachment": false,
+    "toolcall": true,
+    "input": {
+      "text": true,
+      "audio": false,
+      "image": false,
+      "video": false,
+      "pdf": false
+    },
+    "output": {
+      "text": true,
+      "audio": false,
+      "image": false,
+      "video": false,
+      "pdf": false
+    },
+    "interleaved": {
+      "field": "reasoning_content"
+    }
+  },
+  "release_date": "2025-10-17",
+  "variants": {}
+}
+amazon-bedrock/amazon.nova-2-lite-v1:0
+{
+  "id": "amazon.nova-2-lite-v1:0",
+  "providerID": "amazon-bedrock",
+  "name": "Nova 2 Lite",
+  "family": "nova",
+  "api": {
+    "id": "amazon.nova-2-lite-v1:0",
+    "url": "",
+    "npm": "@ai-sdk/amazon-bedrock"
+  },
+  "status": "active",
+  "headers": {},
+  "options": {},
+  "cost": {
+    "input": 0.33,
+    "output": 2.75,
+    "cache": {
+      "read": 0.0825,
+      "write": 0.33
+    }
+  },
+  "limit": {
+    "context": 1000000,
+    "output": 65535
+  },
+  "capabilities": {
+    "temperature": true,
+    "reasoning": true,
+    "attachment": true,
+    "toolcall": true,
+    "input": {
+      "text": true,
+      "audio": false,
+      "image": true,
+      "video": true,
+      "pdf": true
+    },
+    "output": {
+      "text": true,
+      "audio": false,
+      "image": false,
+      "video": false,
+      "pdf": false
+    },
+    "interleaved": false
+  },
+  "release_date": "2025-12-02",
+  "variants": {
+    "low": {
+      "reasoningConfig": {
+        "type": "enabled",
+        "maxReasoningEffort": "low"
+      }
+    },
+    "medium": {
+      "reasoningConfig": {
+        "type": "enabled",
+        "maxReasoningEffort": "medium"
+      }
+    },
+    "high": {
+      "reasoningConfig": {
+        "type": "enabled",
+        "maxReasoningEffort": "high"
+      }
+    }
+  }
+}
+amazon-bedrock/amazon.nova-lite-v1:0
+{
+  "id": "amazon.nova-lite-v1:0",
+  "providerID": "amazon-bedrock",
+  "name": "Nova Lite",
+  "family": "nova-lite",
+  "api": {
+    "id": "amazon.nova-lite-v1:0",
+    "url": "",
+    "npm": "@ai-sdk/amazon-bedrock"
+  },
+  "status": "active",
+  "headers": {},
+  "options": {},
+  "cost": {
+    "input": 0.06,
+    "output": 0.24,
+    "cache": {
+      "read": 0.015,
+      "write": 0.06
+    }
+  },
+  "limit": {
+    "context": 300000,
+    "output": 10000
+  },
+  "capabilities": {
+    "temperature": true,
+    "reasoning": false,
+    "attachment": true,
+    "toolcall": true,
+    "input": {
+      "text": true,
+      "audio": false,
+      "image": true,
+      "video": true,
+      "pdf": true
+    },
+    "output": {
+      "text": true,
+      "audio": false,
+      "image": false,
+      "video": false,
+      "pdf": false
+    },
+    "interleaved": false
+  },
+  "release_date": "2024-12-03",
+  "variants": {}
+}
+azure/claude-fable-5
+{
+  "id": "claude-fable-5",
+  "providerID": "azure",
+  "name": "Claude Fable 5",
+  "family": "claude-fable",
+  "api": {
+    "id": "claude-fable-5",
+    "url": "https://${AZURE_RESOURCE_NAME}.services.ai.azure.com/anthropic/v1",
+    "npm": "@ai-sdk/anthropic"
+  },
+  "status": "beta",
+  "headers": {},
+  "options": {},
+  "cost": {
+    "input": 10,
+    "output": 50,
+    "cache": {
+      "read": 1,
+      "write": 12.5
+    }
+  },
+  "limit": {
+    "context": 1000000,
+    "output": 128000
+  },
+  "capabilities": {
+    "temperature": false,
+    "reasoning": true,
+    "attachment": true,
+    "toolcall": true,
+    "input": {
+      "text": true,
+      "audio": false,
+      "image": true,
+      "video": false,
+      "pdf": true
+    },
+    "output": {
+      "text": true,
+      "audio": false,
+      "image": false,
+      "video": false,
+      "pdf": false
+    },
+    "interleaved": false
+  },
+  "release_date": "2026-06-09",
+  "variants": {
+    "low": {
+      "thinking": {
+        "type": "adaptive",
+        "display": "summarized"
+      },
+      "effort": "low"
+    },
+    "medium": {
+      "thinking": {
+        "type": "adaptive",
+        "display": "summarized"
+      },
+      "effort": "medium"
+    },
+    "high": {
+      "thinking": {
+        "type": "adaptive",
+        "display": "summarized"
+      },
+      "effort": "high"
+    },
+    "xhigh": {
+      "thinking": {
+        "type": "adaptive",
+        "display": "summarized"
+      },
+      "effort": "xhigh"
+    }
+  }
+}
+azure/claude-fable-5-1
+{
+  "id": "claude-fable-5-1",
+  "providerID": "azure",
+  "name": "Claude Fable 5.1",
+  "family": "claude-fable",
+  "api": {
+    "id": "claude-fable-5-1",
+    "url": "https://${AZURE_RESOURCE_NAME}.services.ai.azure.com/anthropic/v1",
+    "npm": "@ai-sdk/anthropic"
+  },
+  "status": "active",
+  "headers": {},
+  "options": {},
+  "cost": {
+    "input": 10,
+    "output": 50,
+    "cache": {
+      "read": 0.25,
+      "write": 12.5
+    }
+  },
+  "limit": {
+    "context": 1000000,
+    "output": 128000
+  },
+  "capabilities": {
+    "temperature": false,
+    "reasoning": true,
+    "attachment": true,
+    "toolcall": true,
+    "input": {
+      "text": true,
+      "audio": false,
+      "image": true,
+      "video": false,
+      "pdf": true
+    },
+    "output": {
+      "text": true,
+      "audio": false,
+      "image": false,
+      "video": false,
+      "pdf": false
+    },
+    "interleaved": false
+  },
+  "release_date": "2026-09-01",
+  "variants": {
+    "low": {
+      "thinking": {
+        "type": "adaptive",
+        "display": "summarized"
+      },
+      "effort": "low"
+    },
+    "medium": {
+      "thinking": {
+        "type": "adaptive",
+        "display": "summarized"
+      },
+      "effort": "medium"
+    },
+    "high": {
+      "thinking": {
+        "type": "adaptive",
+        "display": "summarized"
+      },
+      "effort": "high"
+    },
+    "xhigh": {
+      "thinking": {
+        "type": "adaptive",
+        "display": "summarized"
+      },
+      "effort": "xhigh"
+    }
+  }
+}

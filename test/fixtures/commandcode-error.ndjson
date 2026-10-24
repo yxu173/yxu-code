@@ -1,0 +1,8 @@
+{"type":"event","event":{"type":"run_start","sessionId":"321f6b2f-029e-4593-9b81-1feb6d64a3ce"}}
+{"type":"event","event":{"type":"turn_start","turnNumber":1}}
+{"type":"event","event":{"type":"message_start"}}
+{"type":"event","event":{"type":"model_request_start","model":"deepseek/deepseek-v4-flash"}}
+{"type":"event","event":{"type":"model_trace","traceId":"015f130a814a5b1a9d269dc854bcc191"}}
+{"type":"event","event":{"type":"run_error","error":{"name":"TransportError","message":"POST /alpha/generate → 429 error: You've reached your weekly usage limit for your plan. Your limit resets at 2026-10-26T17:10:34.868Z. Please wait for the window to reset or upgrade your plan to continue."}}}
+{"type":"event","event":{"type":"run_end","result":{"finalText":"","stopReason":"run_error","turnCount":1,"usage":{"inputTokens":0,"outputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0},"systemPromptTokens":null,"nextState":{"sessionId":"321f6b2f-029e-4593-9b81-1feb6d64a3ce","messages":[{"role":"user","content":[{"type":"text","text":"Add a function sub(a, b) to calc.py that returns a - b. Do not touch anything else."}],"meta":{"source":"user","createdAt":1792841352573,"messageId":"b8a32d30-f568-4693-b86b-746a2dfd8123"}}],"interrupted":false,"modState":{"workspace":{"cwd":"/repo","platform":"linux","branch":"master","gitStatus":null,"recentCommits":["64a3805 init"],"additionalDirectories":[]}}}}}}
+{"type":"result","subtype":"error","sessionId":"321f6b2f-029e-4593-9b81-1feb6d64a3ce","usage":{"inputTokens":0,"outputTokens":0,"cacheReadTokens":0,"cacheWriteTokens":0},"durationMs":1950,"finalText":"","error":"Error: You've reached your weekly usage limit. Resets in 2d 5h (Mon 8:10 PM).\nKeep going with /extra (pay-as-you-go at API cost, zero markup) or /upgrade."}
