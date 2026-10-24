@@ -87,7 +87,7 @@ describe("saveConfigPatch", () => {
     cfg.compact.window = 300_000;
     cfg.context.include = ["docs/A.md"];
     cfg.context.notes = "be careful";
-    saveConfigPatch(cfg, root, contextPatch(cfg));
+    saveConfigPatch(root, contextPatch(cfg));
     const out = readFileSync(file, "utf8");
     expect(out).toContain("# my config");
     expect(out).toContain("# the coder");
@@ -96,13 +96,13 @@ describe("saveConfigPatch", () => {
     expect(back.context).toMatchObject({ include: ["docs/A.md"], notes: "be careful" });
 
     const before = readFileSync(file, "utf8");
-    expect(() => saveConfigPatch(back, root, [{ path: ["compact", "window"], value: 5 }])).toThrow(/compact.window/);
+    expect(() => saveConfigPatch(root, [{ path: ["compact", "window"], value: 5 }])).toThrow(/compact.window/);
     expect(readFileSync(file, "utf8")).toBe(before); // nothing written
   });
   test("built-in defaults: creates a project yxu.yaml", () => {
     const cfg = parseConfig(DEFAULT_YAML, "(built-in defaults)");
     cfg.context.memory = false;
-    const file = saveConfigPatch(cfg, root, contextPatch(cfg));
+    const file = saveConfigPatch(root, contextPatch(cfg));
     expect(file).toBe(join(root, "yxu.yaml"));
     expect(existsSync(file)).toBe(true);
     expect(parseConfig(readFileSync(file, "utf8"), file).context.memory).toBe(false);

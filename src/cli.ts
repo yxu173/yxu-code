@@ -3,6 +3,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { DEFAULT_YAML, getWorkflow, loadConfig, toProfile, type Config } from "./config.ts";
+import { excludeFromGit } from "./config-edit.ts";
+import { loadLayers } from "./config-layers.ts";
 import { buildContextPrompt, compactSettings, formatTokens, settingSources } from "./context.ts";
 import { applyTask, discardTask } from "./actions.ts";
 import { combineTasks, readTaskRecord } from "./combine.ts";
@@ -38,6 +40,8 @@ Usage:
   yxu apply <task-id>       merge the task branch into your current branch
   yxu discard <task-id>     delete the task worktree and branch
   yxu init                  write a starter yxu.yaml in the repo root
+  yxu config [explain|get|set|unset|paths|migrate|schema]
+                            layered config: user → yxu.yaml → yxu.local.yaml → YXU_* → --set
   yxu agents                list configured agents and workflows
   yxu context               show what the orchestrator sees and how it compacts
   yxu models [agent|cli] [search] [--refresh] [--json]
@@ -94,6 +98,7 @@ async function delegate(argv: string[]) {
       agent: { type: "string" },
       "no-worktree": { type: "boolean" },
       json: { type: "boolean" },
+      set: { type: "string", multiple: true },
     },
   });
 
@@ -114,7 +119,7 @@ async function delegate(argv: string[]) {
       timeoutMs: values.timeout ? Number(values.timeout) * 1000 : undefined,
     };
   } else {
-    const cfg = loadConfig(repoRoot(process.cwd()));
+    const cfg = loadConfig(repoRoot(process.cwd()), { sets: values.set });
     agentName = positionals.shift() ?? die("missing agent name (or pass --cli)");
     const raw = cfg.agents[agentName] ?? die(`unknown agent "${agentName}" in ${cfg.source}`);
     profile = { ...toProfile(raw), ...(values.model ? { model: values.model } : {}) };
@@ -149,10 +154,11 @@ async function tui(argv: string[]) {
       "reduced-motion": { type: "boolean" },
       "no-color": { type: "boolean" },
       demo: { type: "boolean" },
+      set: { type: "string", multiple: true },
     },
   });
   const root = repoRoot(process.cwd());
-  const cfg = loadConfig(root);
+  const cfg = loadConfig(root, { sets: values.set });
   getWorkflow(cfg, values.workflow); // validate before taking over the screen
   const { runTui } = await import("./tui/index.ts");
   const { pending } = await runTui({
@@ -160,6 +166,7 @@ async function tui(argv: string[]) {
     root,
     workflow: values.workflow,
     demo: values.demo,
+    sets: values.set,
     ascii: values.ascii || undefined,
     reducedMotion: values["reduced-motion"] || undefined,
     depth: values["no-color"] ? "none" : undefined,
@@ -176,15 +183,17 @@ async function run(argv: string[]) {
       workflow: { type: "string", short: "w" },
       model: { type: "string", short: "m" },
       budget: { type: "string" },
+      set: { type: "string", multiple: true },
     },
   });
   const goal = positionals.join(" ").trim();
   if (!goal) die('missing goal, e.g. yxu run "add a --verbose flag"');
 
   const root = repoRoot(process.cwd());
-  const cfg = loadConfig(root);
-  if (values.model) cfg.orchestrator.model = values.model;
-  if (values.budget) cfg.orchestrator.max_budget_usd = Number(values.budget);
+  const sets = [...(values.set ?? [])];
+  if (values.model) sets.push(`orchestrator.model=${values.model}`);
+  if (values.budget) sets.push(`orchestrator.max_budget_usd=${values.budget}`);
+  const cfg = loadConfig(root, { sets });
   const workflow = getWorkflow(cfg, values.workflow);
 
   const ac = new AbortController();
@@ -290,11 +299,11 @@ function selfCommand(): string[] {
 async function mcp(argv: string[]) {
   const { values } = parseArgs({
     args: argv,
-    options: { workflow: { type: "string", short: "w" }, session: { type: "string" } },
+    options: { workflow: { type: "string", short: "w" }, session: { type: "string" }, set: { type: "string", multiple: true } },
   });
   const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
   const root = repoRoot(process.cwd());
-  const cfg = loadConfig(root);
+  const cfg = loadConfig(root, { sets: values.set });
   const workflow = getWorkflow(cfg, values.workflow);
   const session = new Session();
   const save = () => values.session && session.save(values.session, { mode: "chat", workflow: workflow.name });
@@ -320,10 +329,11 @@ async function chat(argv: string[]) {
       "allow-edits": { type: "boolean" },
       "user-settings": { type: "boolean" },
       print: { type: "boolean", short: "p" },
+      set: { type: "string", multiple: true },
     },
   });
   const root = repoRoot(process.cwd());
-  const cfg = loadConfig(root);
+  const cfg = loadConfig(root, { sets: values.set });
   const workflow = getWorkflow(cfg, values.workflow);
   if (!which("claude")) die("`claude` not found on PATH");
 
@@ -332,7 +342,7 @@ async function chat(argv: string[]) {
   const [cmd, ...cmdArgs] = selfCommand();
   const mcpConfig = {
     mcpServers: {
-      [SERVER_NAME]: { command: cmd, args: [...cmdArgs, "mcp", "-w", workflow.name, "--session", sessionFile], cwd: root },
+      [SERVER_NAME]: { command: cmd, args: [...cmdArgs, "mcp", "-w", workflow.name, "--session", sessionFile, ...(values.set ?? []).flatMap((x) => ["--set", x])], cwd: root },
     },
   };
   const args = [
@@ -443,7 +453,12 @@ function init() {
         "",
       );
   writeFileSync(path, yaml);
-  console.log(`✓ wrote ${path}${verify ? ` (verify: ${verify})` : ""}\n  edit the agents and models, then: yxu agents`);
+  excludeFromGit(root, "yxu.local.yaml");
+  console.log(
+    `✓ wrote ${path}${verify ? ` (verify: ${verify})` : ""}\n` +
+      `  edit the agents and models, then: yxu agents\n` +
+      `  personal overrides: yxu config set <key> <value> --local  (yxu.local.yaml, git-ignored)`,
+  );
 }
 
 function agents() {
@@ -548,8 +563,11 @@ function doctor() {
     console.log(`✓ ${cli.padEnd(12)} ${ver}  (${path})`);
   }
   try {
-    const cfg = loadConfig(repoRoot(process.cwd()));
+    const { config: cfg, layers } = loadLayers(repoRoot(process.cwd()));
     console.log(`✓ config       ${cfg.source} (${Object.keys(cfg.agents).length} agents)`);
+    for (const l of layers) {
+      if (l.file && l.exists && l.version === undefined) console.log(`! config       ${l.file} has no version; run \`yxu config migrate\``);
+    }
   } catch (e) {
     bad++;
     console.log(`✗ config       ${(e as Error).message}`);
@@ -610,6 +628,10 @@ try {
     case "models":
       await models(rest);
       break;
+    case "config": {
+      const { configCommand } = await import("./config-cli.ts");
+      process.exit(await configCommand(rest));
+    }
     case "update": {
       const { values } = parseArgs({ args: rest, options: { check: { type: "boolean" }, version: { type: "string" } } });
       process.exit(await update({ check: values.check, version: values.version }));

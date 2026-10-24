@@ -15,12 +15,14 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
+    "schema": "bun -e 'import { schemaText } from \"./src/config-schema.ts\"; await Bun.write(\"schema/yxu.schema.json\", schemaText())'",
     "build": "bun build --compile src/cli.ts --outfile dist/yxu",
     "release:build": "bun scripts/build-release.ts",
     "smoke": "sh scripts/smoke.sh dist/yxu"
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "ajv": "^8",
     "typescript": "^5.6.0"
   },
   "dependencies": {

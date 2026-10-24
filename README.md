@@ -55,6 +55,44 @@ worktrees. It checks the results (and your `verify` command), then asks you to *
 the diff**, decide **later** or **discard**. From scripts, use `yxu run "<goal>"`, then
 `yxu show <task>` and `yxu apply <task>`.
 
+## Configuration
+
+Settings come from layers. A later layer wins; maps merge, lists replace, and `null` removes
+an entry from a lower layer:
+
+| layer | file | for |
+|---|---|---|
+| defaults | built in | starter agents and workflows, used until some file defines `agents` |
+| user | `~/.config/yxu/config.yaml` | you, in every repo (your own agents, preferred models) |
+| project | `yxu.yaml` | the team; committed |
+| local | `yxu.local.yaml` | you, in this repo; git-ignored automatically |
+| env | `YXU_ORCHESTRATOR_MODEL=sonnet`, `YXU_SETTINGS_CONCURRENCY=2`, … | CI and scripts (orchestrator, settings, context, compact keys) |
+| flags | `--set key=value` on `run`, `tui`, `chat`, `mcp`, `delegate` | one run |
+
+```yaml
+# yxu.local.yaml: use OpenCode for the team's "coder" agent, just for me
+version: 1
+agents:
+  coder: { cli: opencode, model: opencode/deepseek-v4.1-flash-free }  # a new cli replaces the whole agent
+  heavy-coder: null                                                    # hide a team agent
+settings:
+  concurrency: 5
+```
+
+```sh
+yxu config                          # every setting and the file it came from
+yxu config explain agents.coder     # one key or section
+yxu config set orchestrator.model sonnet --local    # or --project (default) / --user
+yxu config unset settings.concurrency --local
+yxu config migrate [--write]        # add/upgrade the version: line (shows the diff first)
+yxu config schema                   # JSON Schema; files from yxu init reference it for editor completion
+```
+
+Every file carries `version: 1`. A file written for a newer yxu is refused with a hint to
+`yxu update`, and `yxu doctor` flags files without a version. Edits from `yxu config set` and
+`/save` are validated against the merged result of all layers before anything is written.
+An error names the file that set the bad value.
+
 See [PLAN.md](PLAN.md) for the design and history and
 [docs/PUBLIC_PLAN.md](docs/PUBLIC_PLAN.md) for the customization roadmap.
 
@@ -109,7 +147,8 @@ ids, repo files, on/off. Commands also work while a run is going (changes apply 
 | `/context …` `/compact …` | what the orchestrator sees; conversation compaction (below) |
 | `/tasks` `/diff <task>` `/apply <task>` `/discard <task>` | results |
 | `/panel [on\|off]` `/motion on\|off` `/ascii on\|off` | the interface |
-| `/save` | write this session's setting changes to yxu.yaml (comments kept, validated first) |
+| `/save [project\|local\|user]` | write this session's setting changes to yxu.yaml, yxu.local.yaml or your user config (comments kept, validated first) |
+| `/config [key]` | every setting and the config layer it came from |
 
 **Models come from the CLIs themselves:** `cmd --list-models` (Command Code: 93 models in
 sections), `opencode models --verbose` (OpenCode: every configured provider, with context size
@@ -153,7 +192,7 @@ compact:
 | `/context instructions on\|off` | load CLAUDE.md or not |
 | `/context add <file>` · `/context drop <file>` | include a file in every run (inside the repo only) |
 | `/context notes <text>` · `/context notes clear` | standing notes |
-| `/context save` (or `/save`) | persist all of the above to yxu.yaml |
+| `/context save [local\|user]` (or `/save`) | persist all of the above (default: yxu.yaml) |
 | `/compact [extra instructions]` | summarize the conversation now; shows before → after tokens |
 | `/compact auto on\|off` · `/compact window <200k\|auto>` | auto-compaction and its window |
 | `/compact instructions <text>` · `/compact warn <80%>` | what summaries must keep; warning level |
@@ -216,7 +255,7 @@ streaming text deltas (`includePartialMessages`), conversation resume across tur
 ### Checks
 
 ```sh
-bun test                 # 113 tests, incl. test/tui.test.ts (keys, editor, layout, frames, interaction)
+bun test                 # 132 tests, incl. test/tui.test.ts (keys, editor, layout, frames, interaction)
 bunx tsc --noEmit
 bun scripts/snapshot.ts --at deciding --width 140 --height 46 [--ascii] [--html out.html]
 python3 scripts/pty-drive.py 110 32 <repo> script.json -- bun src/cli.ts tui --demo

@@ -281,6 +281,14 @@ Phases 1–3 deliver most of the value. Packs (4) only make sense once the file 
 
   Remaining: the first tagged release, and the publishing secrets (npm, tap, AUR).
 
+- **Phase 1 (layers and schema), in review:**
+  - user, project, local, env and flag layers with `null` removal
+  - `yxu config` explain/get/set/unset/paths/migrate/schema, plus `/config` and `/save <layer>` in the interface
+  - `version: 1` and migrations
+  - JSON Schema, with a test that the committed copy is up to date
+
+  `extends:` moves to Phase 4, where it fits with packs.
+
 ## 12. Decisions needed from the owner
 
 Decided: **MIT** license (1). The repo is `yxu-code`; the command and npm package stay `yxu` (2).

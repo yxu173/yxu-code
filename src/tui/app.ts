@@ -8,6 +8,8 @@ import { Session } from "../ops.ts";
 import { runPipeline } from "../orchestrator/pipeline.ts";
 import { compactConversation, runOrchestrator, type OrchestratorRender, type RunOutcome } from "../orchestrator/run.ts";
 import { saveConfigPatch } from "../config-edit.ts";
+import { display, FILE_LAYERS, LAYERS, loadLayers, originOf, type FileLayer } from "../config-layers.ts";
+import { explainRows } from "../config-explain.ts";
 import { COMMANDS, findCommand, onOff, paletteFor, parseCommandLine } from "./commands.ts";
 import { buildContextPrompt, formatTokens, parseTokensArg, resolveInclude, type ContextUsage } from "../context.ts";
 import { killAllSubagents } from "../runner.ts";
@@ -88,6 +90,8 @@ export interface AppOptions {
   backend?: TaskBackend;
   /** Model lists per agent CLI (defaults to querying the CLIs, cached for a day). */
   catalog?: ModelCatalog;
+  /** --set overrides the config was loaded with. */
+  sets?: string[];
 }
 
 const READ_TOOLS = new Set(["Read", "Grep", "Glob"]);
@@ -478,7 +482,11 @@ export class App {
     const { name, args } = parseCommandLine(line);
     const cmd = findCommand(name);
     if (!cmd) {
-      const near = COMMANDS.filter((c) => c.name.startsWith(name.slice(0, 2))).map((c) => `/${c.name}`).slice(0, 4);
+      const shared = (c: string) => [...name].findIndex((ch, i) => c[i] !== ch) >>> 0; // common prefix length
+      const near = COMMANDS.filter((c) => c.name.startsWith(name.slice(0, 2)))
+        .sort((a, b) => Math.min(shared(b.name), name.length) - Math.min(shared(a.name), name.length))
+        .map((c) => `/${c.name}`)
+        .slice(0, 4);
       return this.fail(`unknown command /${name}`, near.length ? `did you mean ${near.join(", ")}? Type / to browse commands` : "type / to browse commands");
     }
     try {
@@ -519,15 +527,41 @@ export class App {
     this.store.set({ context: this.contextInfo() });
   }
 
-  saveConfig() {
+  /** Write this session's changes to one config layer (default: the project's yxu.yaml). */
+  saveConfig(target = "project") {
+    const layer = target.replace(/^--/, "") as FileLayer;
+    if (!(FILE_LAYERS as readonly string[]).includes(layer)) {
+      return this.fail(`unknown layer "${target}"`, "save to: user (~/.config/yxu) · project (yxu.yaml) · local (yxu.local.yaml, git-ignored)");
+    }
     if (!this.dirty.size) return this.note("Nothing to save: no settings changed this session.", "info");
     try {
-      const file = saveConfigPatch(this.cfg, this.o.root, [...this.dirty.values()]);
-      const n = this.dirty.size;
+      const saved = [...this.dirty.values()];
+      const file = saveConfigPatch(this.o.root, saved, layer);
       this.dirty.clear();
-      this.note(`Saved ${n} setting${n === 1 ? "" : "s"} to ${file}.`, "ok");
+      const lines = [`Saved ${saved.length} setting${saved.length === 1 ? "" : "s"} to ${display(file, this.o.root)} (${layer}).`];
+      // A higher layer still decides some of these: say so instead of silently "saving" them.
+      const loaded = loadLayers(this.o.root, { sets: this.o.sets });
+      for (const { path } of saved) {
+        const o = originOf(loaded, path.join("."), this.o.root);
+        if (LAYERS.indexOf(o.layer) > LAYERS.indexOf(layer)) lines.push(`- \`${path.join(".")}\` is still overridden by ${o.file ?? o.layer}`);
+      }
+      this.note(lines.join("\n"), lines.length > 1 ? "attention" : "ok");
     } catch (e) {
       this.fail((e as Error).message, "nothing was written; fix the value and /save again");
+    }
+  }
+
+  /** `/config [key]`: where each setting comes from. */
+  explainConfig(key?: string) {
+    try {
+      const loaded = loadLayers(this.o.root, { sets: this.o.sets });
+      const files = loaded.layers.filter((l) => l.file).map((l) => `- ${l.name}: ${display(l.file!, this.o.root)}${l.exists ? "" : " (none)"}`);
+      const rows = explainRows(loaded, this.o.root, key);
+      if (key && !rows.length) return this.fail(`no setting "${key}"`, "try /config with no key to list everything");
+      const unsaved = this.dirty.size ? [`*${this.dirty.size} unsaved session change${this.dirty.size === 1 ? "" : "s"} (not shown) — /save [user|project|local]*`] : [];
+      this.note(["**Config layers** (later wins)", ...files, "", ...rows.map((r) => `- \`${r.key}\` = ${r.value} · ${r.from}`), ...unsaved].join("\n"));
+    } catch (e) {
+      this.fail((e as Error).message);
     }
   }
 
@@ -664,7 +698,7 @@ export class App {
 
   private refreshContext(note?: string) {
     this.store.set({ context: this.contextInfo() });
-    if (note) this.store.add({ kind: "notice", tone: "memory", text: `${note} — for this session; /save keeps it in yxu.yaml.` });
+    if (note) this.store.add({ kind: "notice", tone: "memory", text: `${note} — for this session; /save keeps it in yxu.yaml (/save local: only for you).` });
   }
 
   contextCommand(args: string[]) {
@@ -713,7 +747,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
         return this.refreshContext(value === "clear" ? "Notes cleared" : "Notes updated");
       }
       case "save":
-        return this.saveConfig();
+        return this.saveConfig(value || undefined);
       default:
         s.add({ kind: "error", message: `unknown /context option "${sub}"`, hint: "try /context, or: memory on|off · instructions on|off · add <file> · drop <file> · notes <text> · save" });
     }

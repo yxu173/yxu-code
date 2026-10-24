@@ -93,13 +93,45 @@ function fileSuggestions(app: App, prefix: string): Suggestion[] {
     .map((f) => ({ value: f }));
 }
 
+const SAVE_TARGETS = [
+  { value: "project", description: "yxu.yaml — shared with your team" },
+  { value: "local", description: "yxu.local.yaml — just you, this repo (git-ignored)" },
+  { value: "user", description: "~/.config/yxu/config.yaml — just you, every repo" },
+];
+
+/** Section names plus every leaf key that is set, for /config completion. */
+function configKeys(app: App) {
+  const keys = new Set<string>(["orchestrator", "agents", "workflows", "settings", "context", "compact"]);
+  // Every prefix too (agents.coder, not just agents.coder.cli), so enter on a typed section keeps it.
+  for (const k of Object.keys(app.cfg.origins ?? {})) {
+    const parts = k.split(".");
+    for (let i = 2; i <= parts.length; i++) keys.add(parts.slice(0, i).join("."));
+  }
+  return [...keys].map((value) => ({ value, description: app.cfg.origins?.[value] ? `from ${app.cfg.origins[value]}` : "" }));
+}
+
 export const COMMANDS: Command[] = [
   // ── session ──
   { name: "help", description: "Keys, commands, and what every sign means", group: "session", run: (app) => app.store.set({ helpOpen: true }) },
   { name: "status", description: "Session settings, memory, context use, and cost", group: "session", run: (app) => app.showStatus() },
   { name: "new", description: "Start a fresh orchestrator conversation", group: "session", run: (app) => app.newConversation() },
   { name: "clear", description: "Clear the conversation view (tasks are kept)", group: "session", run: (app) => app.clearView() },
-  { name: "save", description: "Save this session's setting changes to yxu.yaml", group: "session", run: (app) => app.saveConfig() },
+  {
+    name: "save",
+    usage: "[project|local|user]",
+    description: "Save this session's setting changes (yxu.yaml, yxu.local.yaml or your user config)",
+    group: "session",
+    complete: (_app, i) => (i === 0 ? SAVE_TARGETS : []),
+    run: (app, args) => app.saveConfig(args[0]),
+  },
+  {
+    name: "config",
+    usage: "[key]",
+    description: "Show every setting and which config layer set it",
+    group: "session",
+    complete: (app, i) => (i === 0 ? configKeys(app) : []),
+    run: (app, args) => app.explainConfig(args[0]),
+  },
   { name: "doctor", description: "Check that the agent CLIs are installed", group: "session", run: (app) => doctor(app) },
   { name: "quit", aliases: ["exit"], description: "Exit yxu (pending results are listed on exit)", group: "session", run: (app) => app.quit() },
 
@@ -304,11 +336,12 @@ export const COMMANDS: Command[] = [
           { value: "add", description: "add a repo file to every run" },
           { value: "drop", description: "remove an added file" },
           { value: "notes", description: "standing notes for the orchestrator" },
-          { value: "save", description: "save to yxu.yaml" },
+          { value: "save", description: "save to yxu.yaml (or: save local / save user)" },
         ];
       if (i === 1 && (before[0] === "memory" || before[0] === "instructions")) return ON_OFF;
       if (i === 1 && before[0] === "drop") return app.cfg.context.include.map((f) => ({ value: f }));
       if (i === 1 && before[0] === "notes") return [{ value: "clear", description: "remove notes" }];
+      if (i === 1 && before[0] === "save") return SAVE_TARGETS;
       return [];
     },
     run: (app, args) => app.contextCommand(args),

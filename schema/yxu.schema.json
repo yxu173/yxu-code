@@ -1,0 +1,375 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/yxu173/yxu-code/main/schema/yxu.schema.json",
+  "title": "yxu configuration (yxu.yaml, yxu.local.yaml, ~/.config/yxu/config.yaml)",
+  "type": "object",
+  "properties": {
+    "orchestrator": {
+      "default": {
+        "model": "opus",
+        "user_settings": false
+      },
+      "type": "object",
+      "properties": {
+        "model": {
+          "default": "opus",
+          "description": "Claude model that plans, delegates and reviews",
+          "type": "string"
+        },
+        "effort": {
+          "description": "Reasoning effort for the orchestrator",
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ]
+        },
+        "max_budget_usd": {
+          "description": "Stop the orchestrator when a run spends more than this",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "max_turns": {
+          "description": "Orchestrator turn limit per run",
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "user_settings": {
+          "default": false,
+          "description": "Load your global Claude settings, plugins and MCP servers (costly)",
+          "type": "boolean"
+        }
+      }
+    },
+    "agents": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "cli": {
+                "type": "string",
+                "enum": [
+                  "commandcode",
+                  "opencode",
+                  "claude"
+                ],
+                "description": "Which agent CLI runs this agent"
+              },
+              "model": {
+                "description": "Model id for the CLI, e.g. deepseek/deepseek-v4-flash (see `yxu models`)",
+                "type": "string"
+              },
+              "permission": {
+                "description": "What the agent may do without asking",
+                "type": "string",
+                "enum": [
+                  "yolo",
+                  "accept-edits",
+                  "plan"
+                ]
+              },
+              "max_turns": {
+                "description": "Turn limit per task",
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "timeout": {
+                "description": "Kill the task after this long: \"90s\", \"15m\", \"1h\" or seconds",
+                "type": [
+                  "string",
+                  "number"
+                ]
+              },
+              "agent": {
+                "description": "Named agent/persona inside the CLI, if it has them",
+                "type": "string"
+              },
+              "description": {
+                "description": "Tells the orchestrator when to use this agent",
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "null",
+            "description": "remove this entry from lower layers"
+          }
+        ]
+      },
+      "description": "Local agent CLIs the orchestrator can delegate to"
+    },
+    "workflows": {
+      "default": {},
+      "description": "How the orchestrator works: auto, or a fixed pipeline of steps",
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "mode": {
+                "default": "auto",
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "pipeline"
+                ]
+              },
+              "allowed_agents": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "instructions": {
+                "type": "string"
+              },
+              "steps": {
+                "type": "array",
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9_-]*$"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "plan"
+                        },
+                        "max_tasks": {
+                          "default": 5,
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 12
+                        },
+                        "instructions": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "type"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9_-]*$"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "delegate"
+                        },
+                        "agent": {
+                          "type": "string"
+                        },
+                        "for_each": {
+                          "type": "string"
+                        },
+                        "prompt": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "agent"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9_-]*$"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "verify"
+                        },
+                        "command": {
+                          "type": "string"
+                        },
+                        "fix_agent": {
+                          "type": "string"
+                        },
+                        "max_rounds": {
+                          "default": 2,
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 10
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "type"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^[a-z][a-z0-9_-]*$"
+                        },
+                        "type": {
+                          "type": "string",
+                          "const": "review"
+                        },
+                        "fix_agent": {
+                          "type": "string"
+                        },
+                        "max_rounds": {
+                          "default": 3,
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 10
+                        },
+                        "instructions": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "fix_agent"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "type": "null",
+            "description": "remove this entry from lower layers"
+          }
+        ]
+      }
+    },
+    "settings": {
+      "type": "object",
+      "properties": {
+        "max_diff_chars": {
+          "default": 12000,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "concurrency": {
+          "default": 3,
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16
+        },
+        "resolver": {
+          "type": "string"
+        },
+        "verify": {
+          "type": "string"
+        },
+        "verify_timeout": {
+          "type": [
+            "string",
+            "number"
+          ]
+        }
+      }
+    },
+    "context": {
+      "default": {
+        "memory": true,
+        "project_instructions": true,
+        "include": [],
+        "include_max_chars": 20000
+      },
+      "type": "object",
+      "properties": {
+        "memory": {
+          "default": true,
+          "type": "boolean"
+        },
+        "project_instructions": {
+          "default": true,
+          "type": "boolean"
+        },
+        "include": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "include_max_chars": {
+          "default": 20000,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "notes": {
+          "type": "string"
+        },
+        "max_diff_chars": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "compact": {
+      "type": "object",
+      "properties": {
+        "auto": {
+          "default": true,
+          "type": "boolean"
+        },
+        "window": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "auto"
+            },
+            {
+              "type": [
+                "number",
+                "string"
+              ]
+            }
+          ]
+        },
+        "instructions": {
+          "type": "string"
+        },
+        "warn_at": {
+          "default": 0.8,
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 1
+        }
+      }
+    },
+    "version": {
+      "description": "Config format version; `yxu config migrate` upgrades old files",
+      "type": "number",
+      "const": 1
+    }
+  }
+}
