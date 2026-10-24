@@ -1,4 +1,5 @@
 import { query, type Options, type Query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { claudeExecutable, VERSION } from "../platform.ts";
 import { join } from "node:path";
 import { z } from "zod";
 import type { Config, Workflow } from "../config.ts";
@@ -106,7 +107,8 @@ function baseOptions(cfg: Config, root: string, abort: AbortController): Options
     settingSources: settingSources(cfg),
     strictMcpConfig: !cfg.orchestrator.user_settings,
     settings: compactSettings(cfg),
-    env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: "yxu/0.3.0" },
+    env: { ...process.env, CLAUDE_AGENT_SDK_CLIENT_APP: `yxu/${VERSION}` },
+    pathToClaudeCodeExecutable: claudeExecutable(),
   };
 }
 

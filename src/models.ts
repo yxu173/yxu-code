@@ -8,6 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { which } from "./platform.ts";
 import type { CliName } from "./types.ts";
 
 export interface ModelInfo {
@@ -105,10 +106,10 @@ export async function discoverModels(cli: CliName): Promise<ModelInfo[]> {
     case "claude":
       return CLAUDE_MODELS;
     case "commandcode":
-      if (!Bun.which("cmd")) throw new Error("`cmd` not found on PATH");
+      if (!which("cmd")) throw new Error("`cmd` not found on PATH");
       return parseCommandCodeModels(await run(["cmd", "--list-models", "--no-auto-update"]));
     case "opencode":
-      if (!Bun.which("opencode")) throw new Error("`opencode` not found on PATH");
+      if (!which("opencode")) throw new Error("`opencode` not found on PATH");
       return parseOpencodeModels(await run(["opencode", "models", "--verbose"]));
   }
 }

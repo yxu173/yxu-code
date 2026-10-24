@@ -11,10 +11,11 @@ import { Session, TaskOps } from "./ops.ts";
 import { runPipeline } from "./orchestrator/pipeline.ts";
 import { orchestratorPrompt, runOrchestrator, sessionPath, type OrchestratorRender } from "./orchestrator/run.ts";
 import { createYxuServer, SERVER_NAME, TOOL_NAMES } from "./orchestrator/tools.ts";
+import { claudeExecutable, isCompiled, VERSION, which } from "./platform.ts";
 import { killAllSubagents, newTaskId, runTask } from "./runner.ts";
 import type { AgentProfile, CliName, TaskResult } from "./types.ts";
 
-const USAGE = `yxu — local multi-agent orchestrator
+const USAGE = `yxu ${VERSION} — local multi-agent orchestrator
 
 Usage:
   yxu                       open the interactive interface (same as yxu tui)
@@ -41,6 +42,7 @@ Usage:
   yxu models [agent|cli] [search] [--refresh] [--json]
                             list the models each agent CLI offers
   yxu doctor                check that agent CLIs are installed
+  yxu --version             print the yxu version
 `;
 
 const CLIS: CliName[] = ["commandcode", "opencode", "claude"];
@@ -320,7 +322,7 @@ async function chat(argv: string[]) {
   const root = repoRoot(process.cwd());
   const cfg = loadConfig(root);
   const workflow = getWorkflow(cfg, values.workflow);
-  if (!Bun.which("claude")) die("`claude` not found on PATH");
+  if (!which("claude")) die("`claude` not found on PATH");
 
   const runId = `chat-${newTaskId()}`;
   const sessionFile = sessionPath(root, runId);
@@ -522,9 +524,17 @@ function contextInfo() {
 
 function doctor() {
   let bad = 0;
+  console.log(`  yxu          ${VERSION}${isCompiled() ? " (binary)" : ""}  ${process.platform}-${process.arch}`);
+  try {
+    const engine = claudeExecutable();
+    console.log(`✓ orchestrator ${engine ? `Claude Code at ${engine}` : "Claude Code engine bundled with the Agent SDK"}`);
+  } catch (e) {
+    bad++;
+    console.log(`✗ orchestrator ${(e as Error).message}`);
+  }
   for (const cli of CLIS) {
     const bin = BINARIES[cli];
-    const path = Bun.which(bin);
+    const path = which(bin);
     if (!path) {
       bad++;
       console.log(`✗ ${cli.padEnd(12)} \`${bin}\` not found on PATH`);
@@ -546,9 +556,17 @@ function doctor() {
   process.exit(bad ? 1 : 0);
 }
 
-const [cmd, ...rest] = process.argv.slice(2);
+const argv = process.argv.slice(2);
+// `yxu --demo`, `yxu -w feature`: interface flags without a subcommand open the interface.
+if (argv[0]?.startsWith("-") && !["-h", "--help", "-v", "--version"].includes(argv[0])) argv.unshift("tui");
+const [cmd, ...rest] = argv;
 try {
   switch (cmd ?? (process.stdin.isTTY && process.stdout.isTTY ? "tui" : undefined)) {
+    case "-v":
+    case "--version":
+    case "version":
+      console.log(VERSION);
+      break;
     case "tui":
       await tui(rest);
       break;
@@ -593,7 +611,7 @@ try {
       break;
     default:
       console.log(USAGE);
-      process.exit(cmd && cmd !== "help" && cmd !== "--help" ? 1 : 0);
+      process.exit(cmd && !["help", "--help", "-h"].includes(cmd) ? 1 : 0);
   }
 } catch (e) {
   die((e as Error).message);

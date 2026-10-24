@@ -1,14 +1,55 @@
 # yxu
 
-A local multi-agent orchestrator. Claude Code (Opus) plans and reviews; local coding agents
-(Command Code, OpenCode, Claude) do the work in isolated git worktrees; nothing reaches your
-branch until you decide. See [PLAN.md](PLAN.md) for the design and project history.
+[![ci](https://github.com/yxu173/yxu-code/actions/workflows/ci.yml/badge.svg)](https://github.com/yxu173/yxu-code/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+A local multi-agent orchestrator for your terminal. Claude Code (Opus) plans and reviews; the
+coding agents you already have installed (Command Code, OpenCode, Claude) do the work in
+isolated git worktrees; nothing reaches your branch until you run `apply`.
+
+Everything runs on your machine with your own CLIs and logins. yxu has no server, no account
+and no telemetry.
+
+## Requirements
+
+- Linux or macOS (Windows: use WSL)
+- `git`
+- [Claude Code](https://claude.com/claude-code) installed and logged in. It drives the orchestrator.
+- At least one coding agent CLI as a subagent: [OpenCode](https://opencode.ai) (`opencode`),
+  [Command Code](https://commandcode.ai) (`cmd`), or Claude Code itself (`claude`)
+
+## Install
 
 ```sh
-bun install
-bun src/cli.ts            # interactive interface (same as `yxu tui`)
-bun src/cli.ts help       # all commands (run, delegate, chat, mcp, apply, …)
+# prebuilt binary (Linux/macOS, x64/arm64), checksum-verified, into ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/yxu173/yxu-code/main/install.sh | sh
+
+# or with npm (no Bun needed; picks the right binary for your platform)
+npm install -g yxu
+
+# or from source (needs Bun ≥ 1.3)
+git clone https://github.com/yxu173/yxu-code && cd yxu-code && bun install && bun link
 ```
+
+`install.sh` honours `YXU_VERSION=v0.1.0` (pin a version) and `YXU_INSTALL_DIR`.
+
+## Quick start
+
+```sh
+cd your-git-repo
+yxu doctor         # checks Claude Code, your agent CLIs and the config
+yxu init           # writes a starter yxu.yaml (agents, workflows, verify command)
+yxu                # open the interface; describe a goal
+yxu --demo         # a scripted tour of the interface: no agents, no git changes, no cost
+```
+
+A typical run: Opus reads the repo and plans, then delegates tasks to your agents in parallel
+worktrees. It checks the results (and your `verify` command), then asks you to **apply**, **view
+the diff**, decide **later** or **discard**. From scripts, use `yxu run "<goal>"`, then
+`yxu show <task>` and `yxu apply <task>`.
+
+See [PLAN.md](PLAN.md) for the design and history and
+[docs/PUBLIC_PLAN.md](docs/PUBLIC_PLAN.md) for the customization roadmap.
 
 ## The interface
 
@@ -19,7 +60,7 @@ whenever a result is ready to apply.
 ```sh
 yxu tui                     # in any git repo with (or without) a yxu.yaml
 yxu tui -w feature          # start in a specific workflow
-yxu tui --demo              # DEVELOPMENT ONLY: scripted replay, no agents, no git, no cost
+yxu tui --demo              # scripted replay with fake data: no agents, no git, no cost
 yxu tui --ascii             # ASCII glyphs only
 yxu tui --reduced-motion    # no pulse animation (elapsed time still updates)
 yxu tui --no-color          # no color (state is always also shown as words and glyphs)
@@ -168,7 +209,7 @@ streaming text deltas (`includePartialMessages`), conversation resume across tur
 ### Checks
 
 ```sh
-bun test                 # 103 tests, incl. test/tui.test.ts (keys, editor, layout, frames, interaction)
+bun test                 # 106 tests, incl. test/tui.test.ts (keys, editor, layout, frames, interaction)
 bunx tsc --noEmit
 bun scripts/snapshot.ts --at deciding --width 140 --height 46 [--ascii] [--html out.html]
 python3 scripts/pty-drive.py 110 32 <repo> script.json -- bun src/cli.ts tui --demo
@@ -179,6 +220,24 @@ width, the panel collapses below 100 columns, state words appear (not color alon
 emits no escape codes, ASCII mode emits only ASCII, and reduced motion keeps glyphs still.
 `pty-drive.py` runs the real binary in a pseudo-terminal, sends keys and resizes, rebuilds the
 screen, and checks that the terminal is restored on exit.
+
+CI runs typecheck, tests, a compiled-binary build and `scripts/smoke.sh` (version, doctor,
+and the interface in a real PTY) on Linux and macOS for every push and pull request.
+
+### Releasing
+
+1. Bump `version` in `package.json`, update `CHANGELOG.md`, commit.
+2. `git tag v0.1.0 && git push origin v0.1.0`.
+
+`.github/workflows/release.yml` then builds binaries for linux-x64/arm64 and darwin-x64/arm64
+(`bun scripts/build-release.ts`), smoke-tests them on native runners, and creates the GitHub
+release with `checksums.txt`. If the `NPM_TOKEN` repository secret is set, it also publishes
+`yxu` plus one `yxu-<os>-<arch>` package per platform to npm. Tags with a `-`, such as
+`v0.1.0-rc.1`, become pre-releases on the npm `next` tag.
+
+A compiled binary uses the `claude` on your PATH as the orchestrator engine; set
+`YXU_CLAUDE_PATH` to use another one. Running from source uses the engine bundled with the
+Agent SDK.
 
 ### Integration gaps (honest list)
 

@@ -331,7 +331,7 @@ no changes cleans itself up. Parsers are tested against real captured output in 
 
 Lists are cached for a day, load in the background, and feed `/agent <name> model` and
 `/model` completion (current model first, search by id or description), `/models`, and
-`yxu models`. 103 tests pass; real-PTY drive with the real lists.
+`yxu models`. 106 tests pass; real-PTY drive with the real lists.
 
 ## 10. Decisions (2026-10-24)
 1. Name: **yxu**.

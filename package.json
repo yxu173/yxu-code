@@ -1,5 +1,6 @@
 {
   "name": "yxu",
+  "private": true,
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -14,7 +15,9 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "build": "bun build --compile src/cli.ts --outfile dist/yxu"
+    "build": "bun build --compile src/cli.ts --outfile dist/yxu",
+    "release:build": "bun scripts/build-release.ts",
+    "smoke": "sh scripts/smoke.sh dist/yxu"
   },
   "devDependencies": {
     "@types/bun": "latest",

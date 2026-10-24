@@ -1,0 +1,20 @@
+name: Feature request
+description: Suggest an idea, a new agent CLI, or a workflow need
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The workflow or problem, not just the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help?
+  - type: input
+    id: agent
+    attributes:
+      label: Agent CLI involved (if any)
+      placeholder: e.g. aider, gemini-cli, codex
