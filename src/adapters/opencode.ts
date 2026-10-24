@@ -13,7 +13,7 @@ export const opencode: Adapter = {
     if (profile.model) argv.push("--model", profile.model);
     if (profile.agent) argv.push("--agent", profile.agent);
     else if (profile.permission === "plan") argv.push("--agent", "plan");
-    if ((profile.permission ?? "yolo") === "yolo") argv.push("--auto");
+    if (profile.permission === "yolo") argv.push("--auto");
     argv.push(task.prompt);
     return argv;
   },

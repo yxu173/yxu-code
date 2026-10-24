@@ -86,6 +86,8 @@ export interface State {
   decision?: Decision;
   /** A workflow gate step waiting for the user's answer. */
   gate?: { message: string; stepId: string };
+  /** An agent asking to use a tool; `waiting` more questions are queued behind it. */
+  approval?: { message: string; agent: string; waiting: number };
   context: ContextInfo;
   tasks: TaskView[];
   activeSlots: number;

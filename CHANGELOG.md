@@ -26,7 +26,21 @@ before 1.0, minor versions may change the config format (with migration notes he
 - Themes (instrument, high-contrast, light, mono, and theme files), `/theme`; rebindable keys
   (`ui.keys`, `yxu keys`, `/keys`); panel sections, panel and footer options; scrollable help.
 
+- ACP agents (`cli: acp`): live tool events, model selection, usage and cost, and approvals
+  (allow once / for the session / deny) in the interface and terminal; `allow`/`deny` rules.
+- Generic agents (`cli: generic`): any CLI from an argv template, with text/json/ndjson output,
+  summary/success/usage expressions and a `models` command.
+- `yxu agent test` and `yxu agent capture`.
+- `sandbox: bwrap` (Linux) confines an agent to its worktree and its own state folders.
+- Repository trust: a repo's own hooks, verify/shell steps, agent commands, shell commands and
+  yolo permissions wait for `yxu trust` / `/trust` (or `YXU_TRUST=1`).
+- `env:NAME` references in agent `env`, so secrets stay out of config files.
+- Model lists for ACP and generic agents.
+- A warning when an agent writes outside its worktree.
+
 ### Changed
+- **Agents default to `accept-edits`**; `yolo` must be set per agent (`yxu doctor` warns about it).
+- Agent processes get `PWD` set to their worktree (some CLIs used yxu's directory instead).
 - Only yxu's runtime files under `.yxu/` are git-ignored now, so workflows and commands there
   can be committed.
 - Release pipeline: binaries for linux-x64/arm64 and darwin-x64/arm64 with checksums, an

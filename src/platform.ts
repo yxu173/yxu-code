@@ -32,9 +32,17 @@ export interface SpawnOptions {
   stdin?: string;
 }
 
+/**
+ * The child's environment. PWD must match the working directory: some CLIs trust $PWD over
+ * their real cwd, and would otherwise work in the directory yxu was started from.
+ */
+function envFor(opts: SpawnOptions): Record<string, string | undefined> | undefined {
+  return opts.cwd ? { ...(opts.env ?? process.env), PWD: opts.cwd } : opts.env;
+}
+
 /** Run a command to completion, capturing output. Throws if the executable can't start. */
 export function runSync(argv: string[], opts: SpawnOptions = {}): Captured {
-  const p = Bun.spawnSync(argv, { cwd: opts.cwd, env: opts.env, stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawnSync(argv, { cwd: opts.cwd, env: envFor(opts), stdout: "pipe", stderr: "pipe" });
   return { code: p.exitCode ?? 1, stdout: p.stdout.toString(), stderr: p.stderr.toString() };
 }
 
@@ -49,7 +57,7 @@ export interface Child {
 export function start(argv: string[], opts: SpawnOptions = {}): Child {
   const proc = Bun.spawn(argv, {
     cwd: opts.cwd,
-    env: opts.env,
+    env: envFor(opts),
     detached: opts.detached,
     stdin: opts.stdin === undefined ? "ignore" : new TextEncoder().encode(opts.stdin),
     stdout: "pipe",
@@ -61,9 +69,51 @@ export function start(argv: string[], opts: SpawnOptions = {}): Child {
   return { pid: proc.pid, result, kill: (signal) => proc.kill(signal) };
 }
 
+export interface Duplex {
+  pid: number;
+  write(text: string): void;
+  /** Lines from stdout, as they arrive. */
+  lines(): AsyncGenerator<string>;
+  /** stderr, complete once the process exits. */
+  stderr: Promise<string>;
+  exited: Promise<number>;
+}
+
+/** Start a long-running process we talk to over stdin/stdout (e.g. an ACP agent). */
+export function spawnDuplex(argv: string[], opts: SpawnOptions = {}): Duplex {
+  const proc = Bun.spawn(argv, { cwd: opts.cwd, env: envFor(opts), detached: opts.detached, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const stderr = new Response(proc.stderr).text();
+  return {
+    pid: proc.pid,
+    write(text) {
+      try {
+        proc.stdin.write(text);
+        proc.stdin.flush();
+      } catch {
+        // the process is gone; the reader will notice
+      }
+    },
+    async *lines() {
+      const dec = new TextDecoder();
+      let buf = "";
+      for await (const chunk of proc.stdout) {
+        buf += dec.decode(chunk, { stream: true });
+        let nl: number;
+        while ((nl = buf.indexOf("\n")) >= 0) {
+          yield buf.slice(0, nl);
+          buf = buf.slice(nl + 1);
+        }
+      }
+      if (buf) yield buf;
+    },
+    stderr,
+    exited: proc.exited,
+  };
+}
+
 /** Run a command attached to this terminal; resolves with its exit code. */
 export async function runAttached(argv: string[], opts: SpawnOptions & { stdin?: "inherit" | "ignore" } = {}): Promise<number> {
-  const proc = Bun.spawn(argv, { cwd: opts.cwd, env: opts.env, stdio: [opts.stdin ?? "inherit", "inherit", "inherit"] });
+  const proc = Bun.spawn(argv, { cwd: opts.cwd, env: envFor(opts), stdio: [opts.stdin ?? "inherit", "inherit", "inherit"] });
   return proc.exited;
 }
 

@@ -26,9 +26,11 @@ describe("opencode", () => {
   });
 
   test("builds argv", () => {
+    // Safe by default: no --auto (opencode's "approve everything") unless yolo is chosen.
     expect(opencode.command(task, { cli: "opencode", model: "a/b" })).toEqual([
-      "opencode", "run", "--format", "json", "--dir", "/repo", "--model", "a/b", "--auto", "do it",
+      "opencode", "run", "--format", "json", "--dir", "/repo", "--model", "a/b", "do it",
     ]);
+    expect(opencode.command(task, { cli: "opencode", permission: "yolo" })).toContain("--auto");
     expect(opencode.command(task, { cli: "opencode", permission: "plan" })).toContain("plan");
   });
 });
@@ -57,7 +59,8 @@ describe("commandcode", () => {
     const argv = commandcode.command(task, { cli: "commandcode", model: "deepseek/deepseek-v4-flash" });
     expect(argv.slice(0, 3)).toEqual(["cmd", "-p", "do it"]);
     expect(argv).toContain("--no-auto-update");
-    expect(argv.join(" ")).toContain("--permission-mode yolo");
+    expect(argv.join(" ")).toContain("--permission-mode accept-edits");
+    expect(commandcode.command(task, { cli: "commandcode", permission: "yolo" }).join(" ")).toContain("--permission-mode yolo");
     expect(argv.join(" ")).toContain("--model deepseek/deepseek-v4-flash");
   });
 });

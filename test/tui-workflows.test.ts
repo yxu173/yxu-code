@@ -147,3 +147,45 @@ describe("workflows in the interface", () => {
     expect(screen()).toContain("inputs are for pipelines");
   });
 });
+
+describe("agent approvals in the interface", () => {
+  test("questions queue; y allows once, a allows for the session, n denies", async () => {
+    const answers: string[] = [];
+    const engine: Engine = {
+      async run(o) {
+        const req = (command: string) => ({ agent: "coder", kind: "execute", title: "bash", command, paths: [] });
+        // Two agents ask at the same time.
+        const both = await Promise.all([o.render.ask!(req("npm test")), o.render.ask!(req("make"))]);
+        answers.push(...both, await o.render.ask!(req("rm -rf build")));
+        return { runId: "r", ok: true, finalText: "done", costUsd: 0, session: new Session() } as RunOutcome;
+      },
+    };
+    let frame: Frame = { rows: [] };
+    const app = new App({
+      cfg: cfg(), root, theme: createTheme({ depth: "none", ascii: false, reducedMotion: true }), engine,
+      historyFile: null, catalog: testCatalog(), draw: (f) => (frame = f), size: () => ({ width: 130, height: 44 }), exit: () => {},
+    });
+    const screen = () => (app.render(), strip(frame.rows.join("\n")));
+    app.input("go\r");
+    await tick();
+    let s = screen();
+    expect(s).toContain("AGENT ASKS");
+    expect(s).toContain("coder wants to run `npm test`");
+    expect(s).toContain("1 more waiting");
+    expect(s).toContain("a allow for session");
+    app.input("y");
+    await tick();
+    expect(screen()).toContain("coder wants to run `make`");
+    app.input("a");
+    await tick();
+    app.input("n");
+    await tick();
+    expect(answers).toEqual(["once", "always", "deny"]);
+    s = screen();
+    // Notices are Markdown, so the code spans render without backticks.
+    expect(s).toContain("Allowed once: coder wants to run npm test");
+    expect(s).toContain("Allowed for this session: coder wants to run make");
+    expect(s).toContain("Denied: coder wants to run rm -rf build");
+    expect(s).not.toContain("AGENT ASKS");
+  });
+});

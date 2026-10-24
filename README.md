@@ -93,6 +93,17 @@ Every file carries `version: 1`. A file written for a newer yxu is refused with 
 `/save` are validated against the merged result of all layers before anything is written.
 An error names the file that set the bad value.
 
+### Any agent, safely
+
+Besides the built-in CLIs, any **ACP** agent (`opencode acp`, Gemini CLI, Claude via
+`claude-agent-acp`, …) or any **generic** CLI described in config can be an agent.
+- `yxu agent test <name>` shows exactly what yxu understood from it.
+- Agents edit files but must ask before anything else, unless you choose `yolo` per agent. ACP agents ask in an approval box.
+- `sandbox: bwrap` confines an agent to its worktree.
+- A cloned repo's own commands (hooks, steps, agent commands) run only after `yxu trust`.
+
+See **[docs/AGENTS.md](docs/AGENTS.md)**.
+
 ### Workflows, commands, prompts, hooks, themes
 
 Customization lives in files: `.yxu/workflows/*.yaml` and `.yxu/commands/*.md` for the team,
@@ -263,7 +274,7 @@ streaming text deltas (`includePartialMessages`), conversation resume across tur
 ### Checks
 
 ```sh
-bun test                 # 164 tests, incl. test/tui.test.ts (keys, editor, layout, frames, interaction)
+bun test                 # 179 tests, incl. test/tui.test.ts (keys, editor, layout, frames, interaction)
 bunx tsc --noEmit
 bun scripts/snapshot.ts --at deciding --width 140 --height 46 [--ascii] [--html out.html]
 python3 scripts/pty-drive.py 110 32 <repo> script.json -- bun src/cli.ts tui --demo

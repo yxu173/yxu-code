@@ -1,6 +1,7 @@
 import { query, type Options, type Query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { claudeExecutable, VERSION } from "../platform.ts";
 import { ORCHESTRATOR_BASE, prompt } from "../prompts.ts";
+import type { Asker } from "../permissions.ts";
 import { join } from "node:path";
 import { z } from "zod";
 import type { Config, Workflow } from "../config.ts";
@@ -40,6 +41,8 @@ export interface OrchestratorRender {
   assistantText(text: string): void;
   toolCall(name: string, input: Record<string, unknown>): void;
   hooks: OpsHooks;
+  /** Ask the user whether an agent may use a tool (ACP agents). Without it, such tools are refused. */
+  ask?: Asker;
   /** Pipeline progress. */
   step?(info: { id: string; type: string; index: number; total: number; note?: string }): void;
   /** Streaming: a new assistant text block begins / receives a chunk. assistantText() finalizes it. */
@@ -213,6 +216,7 @@ export async function runOrchestrator(opts: {
     allowedAgents: workflow.allowed_agents,
     signal: opts.abort.signal,
     hooks: render.hooks,
+    ask: render.ask,
   });
 
   const extra = buildContextPrompt(cfg, root);

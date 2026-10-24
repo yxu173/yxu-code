@@ -8,6 +8,7 @@ import { tryGit } from "../git.ts";
 import { which } from "../platform.ts";
 import type { CliName } from "../types.ts";
 import { commandUsage, type UserCommand } from "../user-commands.ts";
+import { catalogKey, keyLabel } from "../models.ts";
 import { BUILTIN_THEMES, themeFiles } from "./themes.ts";
 import type { App } from "./app.ts";
 
@@ -46,7 +47,7 @@ const ON_OFF: Suggestion[] = [
 ];
 
 /** Models a CLI reports (from the catalog), current one first. */
-function modelSuggestions(app: App, cli: CliName, current?: string): Suggestion[] {
+function modelSuggestions(app: App, cli: string, current?: string): Suggestion[] {
   const st = app.catalog.get(cli);
   const items: Suggestion[] = st.models.map((m) => ({
     value: m.id,
@@ -61,8 +62,9 @@ function modelSuggestions(app: App, cli: CliName, current?: string): Suggestion[
 }
 
 /** One-line status of a CLI's model list, for the palette. */
-export function catalogStatus(app: App, cli: CliName): string | undefined {
-  const st = app.catalog.get(cli);
+export function catalogStatus(app: App, key: string): string | undefined {
+  const st = app.catalog.get(key);
+  const cli = keyLabel(key);
   if (st.status === "loading") return `loading models from ${cli}…`;
   if (st.status === "error") return `could not list ${cli} models: ${st.error} — /models refresh to retry`;
   return st.models.length ? `${st.models.length} ${cli} models · type to search ids and descriptions` : undefined;
@@ -138,6 +140,14 @@ export const COMMANDS: Command[] = [
   { name: "quit", aliases: ["exit"], description: "Exit yxu (pending results are listed on exit)", group: "session", run: (app) => app.quit() },
 
   // ── orchestrator ──
+  {
+    name: "trust",
+    usage: "[off]",
+    description: "Trust this repository so commands from its own config may run",
+    group: "session",
+    complete: (_app, i) => (i === 0 ? [{ value: "off", description: "stop trusting this repository" }] : []),
+    run: (app, [v]) => app.trustRepo(v === "off"),
+  },
   {
     name: "commands",
     description: "List your own commands (.yxu/commands) and reload them from disk",
@@ -255,7 +265,7 @@ export const COMMANDS: Command[] = [
         ];
       if (i === 2 && before[1] === "model") {
         const agent = app.cfg.agents[before[0] ?? ""];
-        return agent ? modelSuggestions(app, agent.cli, agent.model) : [];
+        return agent ? modelSuggestions(app, catalogKey(agent), agent.model) : [];
       }
       if (i === 2 && before[1] === "timeout") return ["5m", "15m", "30m", "1h"].map((v) => ({ value: v }));
       return [];
@@ -267,7 +277,7 @@ export const COMMANDS: Command[] = [
       switch (field) {
         case "model": {
           if (!value) return app.fail("usage: /agent <name> model <model>");
-          const known = app.catalog.get(agent.cli);
+          const known = app.catalog.get(catalogKey(agent));
           app.setConfig(["agents", name!, "model"], value);
           app.changed(`${name} now uses ${value}`);
           // Short names (e.g. "kimi-k2.5") are valid for some CLIs, so this only warns.
@@ -580,7 +590,10 @@ export function paletteFor(app: App, text: string): PaletteState | undefined {
     cmd.name === "model" && before.length === 0
       ? "claude"
       : cmd.name === "agent" && before.length === 2 && before[1] === "model"
-        ? app.cfg.agents[before[0] ?? ""]?.cli
+        ? (() => {
+            const a = app.cfg.agents[before[0] ?? ""];
+            return a ? catalogKey(a) : undefined;
+          })()
         : undefined;
   const status = modelCli ? catalogStatus(app, modelCli) : undefined;
   return { items, selected: 0, mode: "arg", command: cmd.name, hint, status };

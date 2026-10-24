@@ -295,6 +295,17 @@ Phases 1–3 deliver most of the value. Packs (4) only make sense once the file 
   It met its exit criterion: a lint → fix → test → gate → PR workflow and `/ship` command, written
   only as files, ran end to end with a real DeepSeek agent. Panel side (left/right) was not done.
 
+- **Phase 3 (agents for everyone), in review:**
+  - ACP adapter with live events and approvals
+  - generic adapter and `agent test` / `agent capture`
+  - accept-edits by default
+  - repo trust and the bwrap sandbox
+
+  Verified with real OpenCode (built-in, ACP, generic) and Claude Code (built-in, generic,
+  ACP with approvals). Gemini CLI completes the ACP handshake but needs a login; aider has not
+  been run (no API key on the build machine). The macOS sandbox and a network allowlist are
+  not done.
+
 ## 12. Decisions needed from the owner
 
 Decided: **MIT** license (1). The repo is `yxu-code`; the command and npm package stay `yxu` (2).

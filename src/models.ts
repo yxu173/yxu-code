@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { start, which } from "./platform.ts";
-import type { CliName } from "./types.ts";
+import type { AgentKind, CliName } from "./types.ts";
 
 export interface ModelInfo {
   id: string;
@@ -99,6 +99,44 @@ async function run(argv: string[], timeoutMs = 20_000): Promise<string> {
   return out + (out.includes("\n") ? "" : err); // some CLIs print the list on stderr
 }
 
+/**
+ * Catalog key for an agent: the CLI name for built-in CLIs, or the command for ACP and generic
+ * agents (so two agents with the same command share one list).
+ */
+export function catalogKey(a: { cli: AgentKind; command?: string[]; models?: string[] }): string {
+  if (a.cli === "acp") return `acp:${JSON.stringify(a.command ?? [])}`;
+  if (a.cli === "generic") return `generic:${JSON.stringify(a.models ?? [])}`;
+  return a.cli;
+}
+
+/** A short label for a catalog key, for messages. */
+export function keyLabel(key: string): string {
+  const m = /^(acp|generic):(.*)$/.exec(key);
+  if (!m) return key;
+  const argv = JSON.parse(m[2]!) as string[];
+  return argv.length ? `${m[1]} ${argv[0]}` : m[1]!;
+}
+
+/** Discover models for any catalog key. */
+export async function discoverAny(key: string, cwd = process.cwd()): Promise<ModelInfo[]> {
+  const m = /^(acp|generic):(.*)$/.exec(key);
+  if (!m) return discoverModels(key as CliName);
+  const argv = JSON.parse(m[2]!) as string[];
+  if (m[1] === "acp") {
+    if (!which(argv[0]!)) throw new Error(`\`${argv[0]}\` not found on PATH`);
+    const { acpModels } = await import("./acp.ts");
+    return (await acpModels(argv, cwd, process.env)).map((x) => ({ id: x.id, group: x.id.includes("/") ? x.id.slice(0, x.id.indexOf("/")) : "models", description: x.name === x.id ? "" : x.name }));
+  }
+  if (!argv.length) throw new Error("this agent has no `models:` command; add one to list its models");
+  if (!which(argv[0]!)) throw new Error(`\`${argv[0]}\` not found on PATH`);
+  const out = await run(argv);
+  return out
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l && !/\s/.test(l))
+    .map((id) => ({ id, group: id.includes("/") ? id.slice(0, id.indexOf("/")) : "models", description: "" }));
+}
+
 /** Ask a CLI for its models. Throws when the CLI is missing or fails. */
 export async function discoverModels(cli: CliName): Promise<ModelInfo[]> {
   switch (cli) {
@@ -128,17 +166,17 @@ export type CatalogState = { status: "idle" | "loading" | "ready" | "error"; mod
 
 /** In-memory catalog backed by a disk cache; refreshes stale entries in the background. */
 export class ModelCatalog {
-  private state = new Map<CliName, CatalogState>();
-  private inflight = new Map<CliName, Promise<void>>();
+  private state = new Map<string, CatalogState>();
+  private inflight = new Map<string, Promise<void>>();
   private listeners = new Set<() => void>();
 
   constructor(
     private readonly cachePath: string | null = defaultCachePath(),
-    private readonly discover: (cli: CliName) => Promise<ModelInfo[]> = discoverModels,
+    private readonly discover: (key: string) => Promise<ModelInfo[]> = (k) => discoverAny(k),
     private readonly maxAgeMs = DAY,
   ) {
     for (const [cli, entry] of Object.entries(this.readCache())) {
-      this.state.set(cli as CliName, { status: "ready", models: entry.models, fetchedAt: entry.fetchedAt });
+      this.state.set(cli, { status: "ready", models: entry.models, fetchedAt: entry.fetchedAt });
     }
   }
 
@@ -147,7 +185,7 @@ export class ModelCatalog {
     return () => this.listeners.delete(fn);
   }
 
-  get(cli: CliName): CatalogState {
+  get(cli: string): CatalogState {
     // Claude Code has no list command; its models are known up front.
     if (cli === "claude") return { status: "ready", models: CLAUDE_MODELS, fetchedAt: Date.now() };
     const st = this.state.get(cli) ?? { status: "idle", models: [] };
@@ -160,7 +198,7 @@ export class ModelCatalog {
   }
 
   /** Re-query the CLI now. Resolves when done (errors are stored, not thrown). */
-  refresh(cli: CliName): Promise<void> {
+  refresh(cli: string): Promise<void> {
     const pending = this.inflight.get(cli);
     if (pending) return pending;
     const prev = this.state.get(cli);
