@@ -30,13 +30,11 @@ jobs:
           bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      - name: debug shims (temporary)
-        if: runner.os == 'Windows'
-        run: bun scripts/win-debug.ts
       - name: test
         run: |
           git config --global user.name ci
           git config --global user.email ci@example.invalid
+          git config --global core.autocrlf false  # the tests compare file contents byte for byte
           bun test
       - run: bun run build
       - name: smoke test the binary

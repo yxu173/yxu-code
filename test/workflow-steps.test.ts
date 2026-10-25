@@ -161,7 +161,7 @@ describe("parallel and loop", () => {
   });
 
   test("loop repeats until the condition holds, or fails after max_rounds", async () => {
-    const counter = join(scratch, "n");
+    const counter = join(scratch, "n").replaceAll("\\", "/");
     const c = cfg(`  w:
     mode: pipeline
     steps:
