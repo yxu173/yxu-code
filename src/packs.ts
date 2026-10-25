@@ -7,6 +7,7 @@
  *   commands/<n>.md       become /<pack>:<n>
  *   prompts/<name>.md     append to (or replace) a built-in prompt, like .yxu/prompts
  *   themes/<n>.yaml       themes, usable by name
+ *   plugins/<n>.ts        plugins (code; project packs' plugins load once approved)
  *
  * Installed packs are copied into .yxu/packs/<name>/ (project, committed with the repo) or
  * ~/.config/yxu/packs/<name>/ (user), and pinned in yxu.lock next to them. A pack's config
@@ -177,7 +178,7 @@ export function packContentDirs(root: string, kind: "commands" | "prompts" | "th
 }
 
 /** One line describing what a pack holds, for listings and the install summary. */
-export function packContents(pack: InstalledPack): { workflows: string[]; commands: string[]; prompts: string[]; themes: string[]; config: string[]; runs: string[] } {
+export function packContents(pack: InstalledPack): { workflows: string[]; commands: string[]; prompts: string[]; themes: string[]; plugins: string[]; config: string[]; runs: string[] } {
   const data = packData(pack);
   const names = (kind: string, ext: RegExp) => {
     const dir = join(pack.dir, kind);
@@ -210,8 +211,12 @@ export function packContents(pack: InstalledPack): { workflows: string[]; comman
     if (isObj(a) && Array.isArray(a.command)) runs.push(`agent ${n}: ${a.command.join(" ")}`);
     if (isObj(a) && a.permission === "yolo") runs.push(`agent ${n} with yolo permission`);
   }
+  const plugins = existsSync(join(pack.dir, "plugins"))
+    ? readdirSync(join(pack.dir, "plugins")).filter((f) => /^[a-z][a-z0-9-]*(\.(ts|js|mjs))?$/.test(f)).map((f) => f.replace(/\.(ts|js|mjs)$/, "")).sort()
+    : [];
+  for (const p of plugins) runs.push(`plugin ${p}: code that runs inside yxu with your permissions`);
   const config = Object.keys(data).filter((k) => k !== "workflows");
-  return { workflows, commands, prompts: names("prompts", /\.md$/), themes: names("themes", /\.ya?ml$/), config, runs };
+  return { workflows, commands, prompts: names("prompts", /\.md$/), themes: names("themes", /\.ya?ml$/), plugins, config, runs };
 }
 
 /** Parse one config text the way the layers do (used for extends files). */

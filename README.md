@@ -12,9 +12,10 @@ and no telemetry.
 
 ## Requirements
 
-- Linux or macOS (Windows: use WSL)
+- Linux, macOS or Windows (x64; with [Git for Windows](https://git-scm.com), whose `sh` runs shell commands)
 - `git`
 - [Claude Code](https://claude.com/claude-code) installed and logged in. It drives the orchestrator.
+  Pipelines can use one of your agents instead (`orchestrator.provider: agent`).
 - At least one coding agent CLI as a subagent: [OpenCode](https://opencode.ai) (`opencode`),
   [Command Code](https://commandcode.ai) (`cmd`), or Claude Code itself (`claude`)
 
@@ -24,8 +25,10 @@ and no telemetry.
 # prebuilt binary (Linux/macOS, x64/arm64), checksum-verified, into ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/yxu173/yxu-code/main/install.sh | sh
 
-# or with npm (no Bun needed; picks the right binary for your platform)
+# or with npm (no Bun needed; picks the right binary for your platform, Windows included)
 npm install -g yxu
+
+# Windows without npm: download yxu-windows-x64.zip from the releases page and put yxu.exe on PATH
 
 # or Homebrew (macOS/Linux) / AUR (Arch)
 brew install yxu173/tap/yxu
@@ -132,6 +135,19 @@ prefix (`/python:add-tests`), and it is pinned by commit in `yxu.lock`. Before i
 shows everything it can run. See **[docs/PACKS.md](docs/PACKS.md)**, which also explains how
 to write one.
 
+### Plugins and other orchestrators
+
+When files aren't enough, a TypeScript **plugin** can add:
+- slash commands
+- side-panel sections
+- hooks
+- new agent kinds
+- new orchestrators
+
+Plugins from a repo or a pack load only after you approve them, and again whenever their code
+changes. Pipelines can also run **without Claude**: `orchestrator.provider: agent` lets one of
+your local agents plan and review. See **[docs/PLUGINS.md](docs/PLUGINS.md)**.
+
 See [PLAN.md](PLAN.md) for the design and history and
 [docs/PUBLIC_PLAN.md](docs/PUBLIC_PLAN.md) for the customization roadmap.
 
@@ -189,6 +205,7 @@ ids, repo files, on/off. Commands also work while a run is going (changes apply 
 | `/save [project\|local\|user]` | write this session's setting changes to yxu.yaml, yxu.local.yaml or your user config (comments kept, validated first) |
 | `/config [key]` | every setting and the config layer it came from |
 | `/packs` | installed packs, their state against yxu.lock, and what each adds |
+| `/plugins [approve\|revoke]` | plugins, what they add, and approving the ones from this repo |
 
 **Models come from the CLIs themselves:** `cmd --list-models` (Command Code: 93 models in
 sections), `opencode models --verbose` (OpenCode: every configured provider, with context size

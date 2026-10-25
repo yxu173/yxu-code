@@ -96,7 +96,7 @@ describe("layers", () => {
   test("errors name the file that set the bad value", () => {
     project();
     local("agents:\n  coder: { cli: cursor }\n");
-    expect(() => load()).toThrow(/agents\.coder\.cli.*\(from yxu\.local\.yaml\)/s);
+    expect(() => load()).toThrow(/invalid config yxu\.local\.yaml: agent "coder": unknown cli "cursor"/);
     local("settings: { resolver: ghost }\n");
     expect(() => load()).toThrow(/invalid config yxu\.local\.yaml: settings\.resolver "ghost"/);
   });
@@ -141,7 +141,7 @@ describe("editing layers", () => {
     expect(git(root, "status", "--porcelain")).not.toContain("yxu.local.yaml");
     expect(readFileSync(join(root, "yxu.yaml"), "utf8")).toBe(TEAM); // team file untouched
 
-    expect(() => saveConfigPatch(root, [{ path: ["agents", "coder", "cli"], value: "cursor" }], "local")).toThrow(/agents\.coder\.cli/);
+    expect(() => saveConfigPatch(root, [{ path: ["agents", "coder", "cli"], value: "cursor" }], "local")).toThrow(/unknown cli "cursor"/);
     expect(readFileSync(file, "utf8")).toBe(text); // nothing written
   });
 
@@ -196,7 +196,7 @@ describe("JSON Schema", () => {
     expect(validate(parseYaml(DEFAULT_YAML))).toBe(true);
     expect(validate({ version: 1, agents: { coder: { model: "x" } }, settings: { concurrency: 5 } })).toBe(true);
     expect(validate({ agents: { reviewer: null } })).toBe(true);
-    expect(validate({ agents: { coder: { cli: "cursor" } } })).toBe(false);
+    expect(validate({ agents: { coder: { cli: "Not A Cli" } } })).toBe(false);
     expect(validate({ settings: { concurrency: "lots" } })).toBe(false);
     expect(validate({ version: 2 })).toBe(false);
   });

@@ -28,7 +28,7 @@ describe("config", () => {
   });
 
   test("rejects unknown cli", () => {
-    expect(() => parseConfig("agents:\n  a:\n    cli: cursor\n", "x")).toThrow(/agents.a.cli/);
+    expect(() => parseConfig("agents:\n  a:\n    cli: cursor\n", "x")).toThrow(/unknown cli "cursor"/);
   });
 
   test("rejects workflow referencing unknown agent", () => {

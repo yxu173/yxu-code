@@ -22,7 +22,8 @@ test("install kind and release asset", () => {
   expect(installKind("/home/u/.local/bin/yxu", true)).toBe("binary");
   expect(installKind("/usr/bin/bun", false)).toBe("source");
   expect(platformAsset("darwin", "arm64")).toBe("yxu-darwin-arm64.tar.gz");
-  expect(() => platformAsset("win32", "x64")).toThrow(/WSL/);
+  expect(platformAsset("win32", "x64")).toBe("yxu-windows-x64.zip");
+  expect(() => platformAsset("win32", "arm64")).toThrow(/windows-x64 only/);
 });
 
 /** A fake GitHub serving one release whose binary is a shell script printing "new". */

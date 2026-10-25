@@ -7,7 +7,8 @@ import { genericCommand, genericParse } from "./adapters/generic.ts";
 import type { Asker } from "./permissions.ts";
 import { killGroup, start } from "./platform.ts";
 import { sandboxed } from "./sandbox.ts";
-import type { AgentEvent, AgentProfile, ParsedResult, TaskResult } from "./types.ts";
+import { plugins } from "./plugins.ts";
+import type { Adapter, AgentEvent, AgentProfile, CliName, ParsedResult, TaskResult } from "./types.ts";
 
 export interface RunOptions {
   agentName: string;
@@ -36,6 +37,13 @@ export interface RunOptions {
   signal?: AbortSignal;
 }
 
+/** A built-in adapter, or one a loaded plugin adds. */
+function adapterFor(cli: string): Adapter | undefined {
+  if (cli in adapters) return adapters[cli as CliName];
+  const p = plugins().agents.get(cli);
+  return p ? { name: cli, command: (t, prof) => p.agent.command(t, prof), parse: (o, e, c) => p.agent.parse(o, e, c) } : undefined;
+}
+
 export function newTaskId(): string {
   const d = new Date();
   const stamp = d.toISOString().slice(0, 19).replace(/[-:T]/g, "");
@@ -61,8 +69,8 @@ process.on("exit", () => killAllSubagents("SIGKILL"));
 /** Run one subagent task to completion and return a normalized result. */
 export async function runTask(opts: RunOptions): Promise<TaskResult> {
   const { profile } = opts;
-  const adapter = profile.cli === "acp" || profile.cli === "generic" ? undefined : adapters[profile.cli];
-  if (!adapter && profile.cli !== "acp" && profile.cli !== "generic") throw new Error(`unknown cli: ${profile.cli}`);
+  const adapter = profile.cli === "acp" || profile.cli === "generic" ? undefined : adapterFor(profile.cli);
+  if (!adapter && profile.cli !== "acp" && profile.cli !== "generic") throw new Error(`unknown cli: ${profile.cli} (is the plugin that adds it loaded? see \`yxu plugins\`)`);
 
   const root = repoRoot(opts.cwd);
   const taskId = newTaskId();

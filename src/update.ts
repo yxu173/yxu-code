@@ -18,7 +18,11 @@ export function installKind(execPath = process.execPath, compiled = isCompiled()
 }
 
 export function platformAsset(platform = process.platform, arch = process.arch): string {
-  if (platform !== "linux" && platform !== "darwin") throw new Error(`no release binaries for ${platform}; on Windows use WSL`);
+  if (platform === "win32") {
+    if (arch !== "x64") throw new Error(`no release binaries for windows-${arch} (windows-x64 only; or use WSL)`);
+    return "yxu-windows-x64.zip";
+  }
+  if (platform !== "linux" && platform !== "darwin") throw new Error(`no release binaries for ${platform}`);
   if (arch !== "x64" && arch !== "arm64") throw new Error(`no release binaries for ${arch}`);
   return `yxu-${platform}-${arch}.tar.gz`;
 }
@@ -118,14 +122,22 @@ export async function update(opts: UpdateOptions = {}, deps: UpdateDeps = defaul
   const work = mkdtempSync(join(tmpdir(), "yxu-update-"));
   try {
     writeFileSync(join(work, asset), archive);
-    const tar = runSync(["tar", "-xzf", join(work, asset), "-C", work, "yxu"]);
+    const exe = asset.endsWith(".zip") ? "yxu.exe" : "yxu";
+    // bsdtar (macOS, Windows 10+) reads zip files too.
+    const tar = runSync(["tar", asset.endsWith(".zip") ? "-xf" : "-xzf", join(work, asset), "-C", work, exe]);
     if (tar.code !== 0) throw new Error(`could not unpack ${asset}: ${tar.stderr.trim()}`);
     // Stage next to the target, then rename: atomic on the same filesystem, and the running
-    // process keeps its (now unlinked) old file.
+    // process keeps its (now unlinked) old file. Windows can't replace a running .exe, but can
+    // rename it out of the way; the old file is removed on the next update.
     const staged = join(dirname(target), `.yxu-update-${process.pid}`);
     try {
-      writeFileSync(staged, readFileSync(join(work, "yxu")));
+      writeFileSync(staged, readFileSync(join(work, exe)));
       chmodSync(staged, 0o755);
+      if (process.platform === "win32") {
+        const old = `${target}.old`;
+        rmSync(old, { force: true });
+        renameSync(target, old);
+      }
       renameSync(staged, target);
     } catch (e) {
       rmSync(staged, { force: true });

@@ -114,7 +114,7 @@ export function listFiles(path: string): string[] {
   const out: string[] = [];
   const walk = (dir: string) => {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
-      if (e.name === ".git") continue;
+      if (e.name === ".git" || e.name === "node_modules") continue;
       const p = join(dir, e.name);
       if (e.isDirectory()) walk(p);
       else if (e.isFile()) out.push(relative(path, p));

@@ -414,7 +414,12 @@ export function panelRows(state: State, w: number, h: number, ctx: ViewContext):
   const costRows: Line[] = [title("cost"), kv("orchestr.", `$${state.cost.orchestrator.toFixed(4)}`, { fg: "dim" }), kv("agents", `$${state.cost.subagents.toFixed(4)}`, { fg: "dim" })];
 
   const sections: Record<string, Line[]> = { context: ctxRows, agents: agentRows, tasks: taskRows, cost: costRows };
-  const rows: Line[] = (state.layout?.sections ?? ["context", "agents", "tasks", "cost"]).flatMap((name) => [[], ...(sections[name] ?? [])]);
+  for (const p of state.pluginPanels ?? []) {
+    sections[p.id] = [title(p.title), ...(p.lines.length ? p.lines.slice(0, 12).map((l) => truncate([s(l, { fg: "dim" })], inner)) : [[s("nothing to show", { fg: "faint" })]])];
+  }
+  const order = state.layout?.sections ?? ["context", "agents", "tasks", "cost"];
+  const extra = (state.pluginPanels ?? []).map((p) => p.id).filter((id) => !order.includes(id));
+  const rows: Line[] = [...order, ...extra].flatMap((name) => (sections[name] ? [[], ...sections[name]] : []));
 
   return rows.slice(0, h).map((r) => [s(` ${g.v} `, { fg: "faint", bg: "panel" }), ...r.map((x) => ({ ...x, bg: "panel" as const }))]);
 }

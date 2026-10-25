@@ -1,13 +1,15 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { applyTask, applyWithHooks, diffStat, discardTask, type ActionResult } from "../actions.ts";
-import { hooksFor, withRunHooks } from "../hooks.ts";
+import { hasHooks, withRunHooks } from "../hooks.ts";
 import { describe, type Answer, type PermissionRequest } from "../permissions.ts";
+import type { PluginCommand } from "../plugin-api.ts";
+import { loadPlugins, pluginContext, setApproval, setPluginHost } from "../plugins.ts";
 import { packStatus, type PackStatus } from "../pack-install.ts";
 import { packContents } from "../packs.ts";
 import { needsTrust, setTrust } from "../trust.ts";
 import { readTaskRecord } from "../combine.ts";
-import { getWorkflow, type Config, type Workflow } from "../config.ts";
+import { getWorkflow, orchestratorLabel, type Config, type Workflow } from "../config.ts";
 import { branchFor, excludeYxuDir, tryGit } from "../git.ts";
 import { Session } from "../ops.ts";
 import { runPipeline } from "../orchestrator/pipeline.ts";
@@ -71,7 +73,7 @@ export function gitBackend(root: string, cfg: () => Config): TaskBackend {
       const r = tryGit(root, "diff", `HEAD...${branchFor(id)}`);
       return (r.ok && r.out) || readTaskRecord(root, id)?.diff || "";
     },
-    apply: (id) => (hooksFor(cfg(), "before_apply").length ? applyWithHooks(cfg(), root, id) : applyTask(root, id)),
+    apply: (id) => (hasHooks(cfg(), "before_apply") ? applyWithHooks(cfg(), root, id) : applyTask(root, id)),
     discard: (id) => discardTask(root, id),
   };
 }
@@ -142,6 +144,7 @@ export class App {
 
   constructor(private readonly o: AppOptions) {
     this.cfg = structuredClone(o.cfg);
+    Object.defineProperty(this.cfg, "plugins", { value: o.cfg.plugins, enumerable: false, writable: true });
     this.theme = o.theme;
     this.catalog = o.catalog ?? new ModelCatalog();
     // When a model list arrives, refresh an open palette that is waiting for it.
@@ -164,6 +167,7 @@ export class App {
     if (!o.demo) {
       this.reloadUserCommands();
       this.announceTrust();
+      this.startPlugins();
     }
   }
 
@@ -227,6 +231,7 @@ export class App {
   }
 
   dispose() {
+    for (const t of this.panelTimers) clearInterval(t);
     clearInterval(this.ticker);
     clearTimeout(this.flashTimer);
     clearTimeout(this.escTimer);
@@ -1005,6 +1010,111 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
   /** Custom commands from .yxu/commands and ~/.config/yxu/commands. */
   userCommands: UserCommand[] = [];
 
+  // ── plugins ────────────────────────────────────────────────────────────────
+
+  private panelTimers: ReturnType<typeof setInterval>[] = [];
+  private lastOutcome?: { ok: boolean; result: string };
+
+  /** Let plugins talk to this interface, fill their panel sections, and say what waits for approval. */
+  private startPlugins() {
+    setPluginHost({
+      note: (m) => this.note(m),
+      run: async (goal, opts = {}) => {
+        let wf: Workflow & { name: string } | undefined;
+        if (opts.workflow) wf = getWorkflow(this.cfg, opts.workflow);
+        this.startGoal(goal, { workflow: wf, inputs: opts.inputs });
+        await this.running;
+        return this.lastOutcome ?? { ok: false, result: "the run did not start (another one is running)" };
+      },
+    });
+    const reg = this.cfg.plugins;
+    if (!reg) return;
+    for (const e of reg.entries.filter((x) => x.status === "error")) this.fail(`plugin ${e.id} could not be loaded`, e.error);
+    const waiting = reg.entries.filter((e) => e.status === "pending" || e.status === "changed");
+    if (waiting.length) {
+      this.store.add({
+        kind: "notice",
+        tone: "attention",
+        text: `**Plugins wait for your approval.** Plugins are code that runs inside yxu with your permissions:\n${waiting.map((e) => `- ${e.id} — ${display(e.path, this.o.root)}${e.status === "changed" ? " (changed since you approved it)" : ""}${e.pack ? ` (pack ${e.pack})` : ""}`).join("\n")}\n\nRead them, then /plugins approve to load them.`,
+      });
+    }
+    for (const { panel } of reg.panels) {
+      if (panel.refresh && panel.refresh > 0) this.panelTimers.push(setInterval(() => void this.refreshPanels(), Math.max(1, panel.refresh) * 1000));
+    }
+    for (const t of this.panelTimers) (t as { unref?: () => void }).unref?.();
+    void this.refreshPanels();
+  }
+
+  /** Ask every plugin panel for fresh lines (errors show in the section itself). */
+  async refreshPanels() {
+    const reg = this.cfg.plugins;
+    if (!reg?.panels.length) return;
+    const panels = await Promise.all(
+      reg.panels.map(async ({ plugin, panel }) => {
+        let lines: string[];
+        try {
+          const out = await panel.render(pluginContext(plugin, this.o.root, this.cfg as unknown as Record<string, unknown>));
+          lines = Array.isArray(out) ? out.map(String) : [String(out)];
+        } catch (e) {
+          lines = [`! ${(e as Error).message}`];
+        }
+        return { id: `${plugin}:${panel.title}`, title: panel.title, lines };
+      }),
+    );
+    this.store.set({ pluginPanels: panels });
+  }
+
+  /** `/<plugin>:<command>`: run a plugin's command; failures show as faults. */
+  async runPluginCommand(plugin: string, command: PluginCommand, args: string[]) {
+    try {
+      await command.run(pluginContext(plugin, this.o.root, this.cfg as unknown as Record<string, unknown>), args);
+    } catch (e) {
+      this.fail(`/${plugin}:${command.name} failed: ${(e as Error).message}`);
+    }
+    void this.refreshPanels();
+  }
+
+  /** `/plugins`: every plugin found, its state, and what it adds. */
+  listPlugins() {
+    const entries = this.cfg.plugins?.entries ?? [];
+    if (!entries.length) return this.note("No plugins. Put one in .yxu/plugins/ (team) or ~/.config/yxu/plugins/ (you), or install a pack that has one. See docs/PLUGINS.md.", "info");
+    const lines = entries.map((e) => {
+      const p = e.plugin;
+      const adds = p
+        ? [p.commands?.length && `commands ${p.commands.map((c) => `/${p.name}:${c.name}`).join(" ")}`, p.panel?.length && `panel ${p.panel.map((x) => x.title).join(", ")}`, p.hooks && `hooks ${Object.keys(p.hooks).join(", ")}`, p.agents?.length && `agents ${p.agents.map((a) => a.cli).join(", ")}`, p.orchestrators?.length && `orchestrators ${p.orchestrators.map((o) => o.name).join(", ")}`].filter(Boolean).join(" · ")
+        : "";
+      const state = { loaded: "loaded", pending: "**waits for approval** (/plugins approve)", changed: "**changed since approved** (/plugins approve)", error: `**error**: ${e.error}` }[e.status];
+      return `- **${p?.name ?? e.id}** · ${e.scope}${e.pack ? ` · pack ${e.pack}` : ""} · ${state}\n  ${display(e.path, this.o.root)}${adds ? `\n  ${adds}` : ""}`;
+    });
+    this.note(["**Plugins**", ...lines].join("\n"));
+  }
+
+  /** `/plugins approve [name]`: approve this repo's waiting plugins (at their current code) and load them. */
+  approvePlugins(name?: string) {
+    const waiting = (this.cfg.plugins?.entries ?? []).filter((e) => (e.status === "pending" || e.status === "changed") && (!name || e.id === name));
+    if (!waiting.length) return this.note(name ? `No plugin ${name} waits for approval.` : "No plugins wait for approval.", "info");
+    for (const e of waiting) setApproval(e.path, true);
+    this.reloadPlugins();
+    this.note(`Approved ${waiting.map((e) => e.id).join(", ")}. They load now, and again only while their code stays the same.`, "ok");
+  }
+
+  revokePlugin(name?: string) {
+    const e = (this.cfg.plugins?.entries ?? []).find((x) => x.scope === "project" && (x.id === name || x.plugin?.name === name));
+    if (!e) return this.fail(`no plugin ${name ?? "(name?)"} from this repo`, "usage: /plugins revoke <name>");
+    setApproval(e.path, false);
+    this.reloadPlugins();
+    this.note(`${e.id} is no longer approved; it won't load.`, "attention");
+  }
+
+  /** Load plugins again (after an approval): new commands, panels and agents appear. */
+  private reloadPlugins() {
+    const reg = loadPlugins(this.o.root);
+    Object.defineProperty(this.cfg, "plugins", { value: reg, enumerable: false, writable: true });
+    for (const t of this.panelTimers) clearInterval(t);
+    this.panelTimers = [];
+    this.startPlugins();
+  }
+
   /** `/packs`: installed packs, their state against yxu.lock, and what each adds. */
   listPacks() {
     let rows: PackStatus[];
@@ -1120,6 +1230,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
 
     let outcome: RunOutcome | undefined;
     let thrown: unknown;
+    this.lastOutcome = undefined;
     try {
       outcome = await this.o.engine.run({
         goal,
@@ -1135,6 +1246,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     } catch (e) {
       thrown = e;
     }
+    this.lastOutcome = outcome ? { ok: outcome.ok, result: outcome.finalText } : { ok: false, result: thrown ? (thrown as Error).message : "the run failed" };
     this.stopTicker();
     this.finishStreaming();
     this.markStragglers();
@@ -1378,6 +1490,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
           s.state.cost.subagents += r.costUsd ?? 0;
           s.upsertTask({ taskId: r.taskId, agent: r.agent, state: r.ok ? "ok" : "failed", title: this.findActivity(r.taskId)?.title.split("\t")[1] ?? "", files: r.filesChanged.length, pending: !!r.branch });
           slots(-1);
+          void this.refreshPanels();
         },
         onCombineStart: (ids) => {
           closeRead();
@@ -1585,7 +1698,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
       configSource: cfg.source,
       workflow: this.workflow?.name ?? "default",
       mode: this.workflow?.mode ?? "auto",
-      model: cfg.orchestrator.model,
+      model: orchestratorLabel(cfg),
       agents: (this.workflow?.allowed_agents ?? Object.keys(cfg.agents)).map((name) => ({ name, cli: cfg.agents[name]!.cli, model: cfg.agents[name]!.model })),
       concurrency: cfg.settings.concurrency,
       verify: cfg.settings.verify,

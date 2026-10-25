@@ -14,7 +14,9 @@ combine.
 | themes | | `~/.config/yxu/themes/<name>.yaml` |
 | all of the above, bundled | a pack in `.yxu/packs/<name>/` (`yxu add`) | `~/.config/yxu/packs/<name>/` (`yxu add --user`) |
 
-To share a setup across repos or teams, put it in a pack: see [PACKS.md](PACKS.md).
+To share a setup across repos or teams, put it in a pack: see [PACKS.md](PACKS.md). For
+behavior that needs code (commands that call APIs, live panel sections, new agent kinds), write
+a plugin: see [PLUGINS.md](PLUGINS.md).
 
 yxu only keeps its runtime files out of git (`.yxu/worktrees/`, `runs/`, `sessions/`,
 `history.jsonl`), so the rest of `.yxu/` can be committed.

@@ -70,9 +70,35 @@ jobs:
           cd ..
           scripts/smoke.sh release/yxu
 
+  smoke-windows:
+    needs: build
+    name: smoke (windows-x64)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: release
+          path: release
+      - name: verify checksum and run
+        run: |
+          cd release
+          grep "yxu-windows-x64.zip" checksums.txt | sha256sum -c -
+          unzip -q yxu-windows-x64.zip
+          ./yxu.exe --version
+          ./yxu.exe add | grep -q "starter packs"
+          mkdir ../scratch && cd ../scratch && git init -q
+          git config user.name ci && git config user.email ci@example.invalid
+          echo "module x" > go.mod
+          ../release/yxu.exe init --yes --agents claude-coder
+          ../release/yxu.exe packs
+          ../release/yxu.exe config get settings.verify
+
   github-release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: smoke
+    needs: [smoke, smoke-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -91,7 +117,7 @@ jobs:
 
   npm:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: smoke
+    needs: [smoke, smoke-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -114,7 +140,7 @@ jobs:
           case "$GITHUB_REF_NAME" in *-*) tag=next ;; esac
           # Platform packages first, so the wrapper's optional dependencies resolve.
           for dir in npm/yxu-*; do
-            chmod +x "$dir/bin/yxu"
+            chmod +x "$dir"/bin/*
             npm publish "$dir" --access public --provenance --tag "$tag"
           done
           npm publish npm/yxu --access public --provenance --tag "$tag"
