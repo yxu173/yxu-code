@@ -10,7 +10,7 @@
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { BUILTIN_PACKS } from "./builtin-packs.gen.ts";
 import { git } from "./git.ts";
 
@@ -36,7 +36,7 @@ export function parseSource(spec: string, base = process.cwd()): Source {
     }
     return { kind: "builtin", name, spec: `builtin:${name}` };
   }
-  if (s.startsWith(".") || s.startsWith("/") || s.startsWith("~")) {
+  if (s.startsWith(".") || s.startsWith("/") || s.startsWith("~") || /^[a-z]:[\\/]/i.test(s) || s.startsWith("\\\\")) {
     const path = s.startsWith("~") ? join(homedir(), s.slice(1)) : resolve(base, s);
     return { kind: "local", path, spec: s };
   }
@@ -90,7 +90,7 @@ export function fetchSource(src: Source, opts: { commit?: string } = {}): Fetche
     } catch (e) {
       throw new Error(`could not fetch ${src.url}${want === "HEAD" ? "" : ` at ${want}`}: ${(e as Error).message.replace(/^git [^:]*failed: /, "")}`);
     }
-    git(repo, "-c", "advice.detachedHead=false", "checkout", "-q", "FETCH_HEAD");
+    git(repo, "-c", "advice.detachedHead=false", "-c", "core.autocrlf=false", "checkout", "-q", "FETCH_HEAD");
     const commit = git(repo, "rev-parse", "HEAD");
     rmSync(join(repo, ".git"), { recursive: true, force: true });
     const path = src.subpath ? join(repo, src.subpath) : repo;
@@ -117,19 +117,22 @@ export function listFiles(path: string): string[] {
       if (e.name === ".git" || e.name === "node_modules") continue;
       const p = join(dir, e.name);
       if (e.isDirectory()) walk(p);
-      else if (e.isFile()) out.push(relative(path, p));
+      else if (e.isFile()) out.push(relative(path, p).split(sep).join("/")); // the same on every OS
     }
   };
   walk(path);
   return out.sort();
 }
 
-/** A content hash over file names and contents: "sha256-<hex>". */
+/**
+ * A content hash over file names and contents: "sha256-<hex>". Line endings are normalized, so
+ * a Windows checkout (CRLF) and a Linux one hash the same.
+ */
 export function integrity(path: string): string {
   const h = createHash("sha256");
   for (const rel of listFiles(path)) {
     h.update(`${rel}\0`);
-    h.update(readFileSync(rel ? join(path, rel) : path));
+    h.update(readFileSync(rel ? join(path, rel) : path).toString("latin1").replaceAll("\r\n", "\n"), "latin1");
     h.update("\0");
   }
   return `sha256-${h.digest("hex")}`;

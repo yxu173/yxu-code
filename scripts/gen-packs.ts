@@ -3,7 +3,7 @@
  * offline and from the compiled binary. Run `bun run packs` after editing packs/.
  */
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 
 const ROOT = join(import.meta.dir, "..");
 export const GEN_FILE = join(ROOT, "src", "builtin-packs.gen.ts");
@@ -19,7 +19,7 @@ export function generatePacks(): string {
       for (const e of readdirSync(d).sort()) {
         const p = join(d, e);
         if (statSync(p).isDirectory()) walk(p);
-        else files[relative(dir, p)] = readFileSync(p, "utf8");
+        else files[relative(dir, p).split(sep).join("/")] = readFileSync(p, "utf8").replaceAll("\r\n", "\n");
       }
     };
     walk(dir);

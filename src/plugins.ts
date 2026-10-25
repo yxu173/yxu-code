@@ -11,7 +11,7 @@
  * so a changed plugin needs approving again. YXU_TRUST=1 (CI) approves everything.
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { userConfigDir } from "./config-layers.ts";
 import { installedPacks } from "./packs.ts";
 import { PLUGIN_API_VERSION, type Plugin, type PluginAgent, type PluginCommand, type PluginContext, type PluginHooks, type PluginOrchestrator, type PluginPanel } from "./plugin-api.ts";
@@ -154,7 +154,7 @@ function importPlugin(file: string, hash: string): Plugin {
   if (hit?.hash === hash) return hit.plugin;
   // Changed on disk: drop it (and its folder's modules) from the module cache first.
   const dir = dirname(file);
-  for (const k of Object.keys(require.cache)) if (k === file || k.startsWith(`${dir}/`)) delete require.cache[k];
+  for (const k of Object.keys(require.cache)) if (k === file || k.startsWith(dir + sep) || k.startsWith(`${dir}/`)) delete require.cache[k];
   const plugin = checkPlugin(require(file), file);
   loaded.set(file, { hash, plugin });
   return plugin;

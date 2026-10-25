@@ -7,6 +7,7 @@ import { loadLayers } from "../src/config-layers.ts";
 import { branchFor, git, YXU_IDENTITY } from "../src/git.ts";
 import { resolveInputs, runPipeline, type PipelineOptions } from "../src/orchestrator/pipeline.ts";
 import type { OrchestratorRender } from "../src/orchestrator/run.ts";
+import { fakeCli, pathWith } from "./helpers.ts";
 
 let root: string;
 let bin: string;
@@ -29,9 +30,8 @@ beforeEach(() => {
   git(root, ...YXU_IDENTITY, "commit", "-qm", "init");
   bin = mkdtempSync(join(tmpdir(), "yxu-bin-"));
   scratch = mkdtempSync(join(tmpdir(), "yxu-scratch-"));
-  writeFileSync(join(bin, "opencode"), FAKE_AGENT);
-  chmodSync(join(bin, "opencode"), 0o755);
-  process.env.PATH = `${bin}:${origPath}`;
+  fakeCli(bin, "opencode", FAKE_AGENT);
+  process.env.PATH = pathWith(bin, origPath);
 });
 
 afterEach(() => {

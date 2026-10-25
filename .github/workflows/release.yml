@@ -27,7 +27,11 @@ jobs:
           bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      - run: bun test
+      - name: test
+        run: |
+          git config --global user.name ci
+          git config --global user.email ci@example.invalid
+          bun test
       - name: build all targets
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then bun scripts/build-release.ts --version "$GITHUB_REF_NAME"

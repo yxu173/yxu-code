@@ -3,7 +3,7 @@
  * npm and source installs are updated by their own tools; we only say how.
  */
 import { createHash } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { isCompiled, runSync, VERSION } from "./platform.ts";
@@ -15,6 +15,13 @@ export type InstallKind = "binary" | "npm" | "source";
 export function installKind(execPath = process.execPath, compiled = isCompiled()): InstallKind {
   if (!compiled) return "source";
   return /[\\/]node_modules[\\/]/.test(execPath) ? "npm" : "binary";
+}
+
+/** Windows' own tar (bsdtar, reads zip); Git's GNU tar earlier on PATH can't. */
+export function tarCommand(): string {
+  if (process.platform !== "win32") return "tar";
+  const own = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe");
+  return existsSync(own) ? own : "tar";
 }
 
 export function platformAsset(platform = process.platform, arch = process.arch): string {
@@ -124,7 +131,7 @@ export async function update(opts: UpdateOptions = {}, deps: UpdateDeps = defaul
     writeFileSync(join(work, asset), archive);
     const exe = asset.endsWith(".zip") ? "yxu.exe" : "yxu";
     // bsdtar (macOS, Windows 10+) reads zip files too.
-    const tar = runSync(["tar", asset.endsWith(".zip") ? "-xf" : "-xzf", join(work, asset), "-C", work, exe]);
+    const tar = runSync([tarCommand(), asset.endsWith(".zip") ? "-xf" : "-xzf", join(work, asset), "-C", work, exe]);
     if (tar.code !== 0) throw new Error(`could not unpack ${asset}: ${tar.stderr.trim()}`);
     // Stage next to the target, then rename: atomic on the same filesystem, and the running
     // process keeps its (now unlinked) old file. Windows can't replace a running .exe, but can

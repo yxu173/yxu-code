@@ -6,7 +6,8 @@
  * command lines use Git's `sh` when it is installed (packs and docs write POSIX commands) and
  * cmd.exe otherwise, and process trees are ended with `taskkill /T` instead of process groups.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import pkg from "../package.json" with { type: "json" };
 
 export const VERSION: string = pkg.version;
@@ -42,11 +43,31 @@ export function shellArgvMerged(command: string): string[] {
   return argv[0] === "cmd.exe" ? [...argv.slice(0, -1), `(${command}) 2>&1`] : [argv[0]!, "-c", `(${command}\n) 2>&1`];
 }
 
-/** On Windows, run `foo` as the full path PATHEXT finds (e.g. foo.cmd), as Unix shells would. */
-function resolveArgv(argv: string[]): string[] {
-  if (!isWindows || !argv[0] || /[\\/]/.test(argv[0])) return argv;
-  const exe = which(argv[0]);
-  return exe ? [exe, ...argv.slice(1)] : argv;
+/**
+ * On Windows, run `foo` as the file PATHEXT finds, as a Unix shell would. npm installs CLIs as
+ * `.cmd` shims, and cmd.exe can't pass arguments with newlines (every agent prompt has them), so
+ * a shim is run as the script it points to (`node <script>`, or the .exe directly).
+ */
+export function resolveArgv(argv: string[]): string[] {
+  if (!isWindows || !argv[0]) return argv;
+  const exe = /[\\/]/.test(argv[0]) ? argv[0] : which(argv[0]);
+  if (!exe) return argv;
+  const rest = argv.slice(1);
+  if (!/\.(cmd|bat)$/i.test(exe)) return [exe, ...rest];
+  const target = npmShimTarget(readFileSync(exe, "utf8"), exe);
+  if (target) {
+    if (/\.exe$/i.test(target)) return [target, ...rest];
+    const local = join(dirname(exe), "node.exe");
+    return [existsSync(local) ? local : (which("node") ?? "node"), target, ...rest];
+  }
+  // Not an npm shim: cmd.exe it is (arguments with newlines or quotes may not survive).
+  return ["cmd.exe", "/d", "/s", "/c", exe, ...rest];
+}
+
+/** The script an npm `.cmd` shim runs: `"%dp0%\node_modules\x\bin\x.js" %*` (or `%~dp0`). */
+export function npmShimTarget(text: string, shimFile: string): string | undefined {
+  const m = /"%~?dp0%?\\([^"]+)"\s+%\*/i.exec(text);
+  return m ? join(dirname(shimFile), ...m[1]!.split("\\")) : undefined;
 }
 
 /** Display width of a string in terminal cells. */

@@ -8,6 +8,7 @@ import { branchFor, git, YXU_IDENTITY } from "../src/git.ts";
 import { runHooks, withRunHooks } from "../src/hooks.ts";
 import { Session, TaskOps } from "../src/ops.ts";
 import type { RunOutcome } from "../src/orchestrator/run.ts";
+import { fakeCli, pathWith } from "./helpers.ts";
 
 let root: string;
 let bin: string;
@@ -29,9 +30,8 @@ beforeEach(() => {
   git(root, ...YXU_IDENTITY, "commit", "-qm", "init");
   bin = mkdtempSync(join(tmpdir(), "yxu-bin-"));
   out = mkdtempSync(join(tmpdir(), "yxu-out-"));
-  writeFileSync(join(bin, "opencode"), FAKE_AGENT);
-  chmodSync(join(bin, "opencode"), 0o755);
-  process.env.PATH = `${bin}:${origPath}`;
+  fakeCli(bin, "opencode", FAKE_AGENT);
+  process.env.PATH = pathWith(bin, origPath);
 });
 afterEach(() => {
   process.env.PATH = origPath;

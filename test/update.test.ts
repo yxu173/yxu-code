@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { compareVersions, installKind, platformAsset, update, type UpdateDeps } from "../src/update.ts";
+import { compareVersions, installKind, platformAsset, tarCommand, update, type UpdateDeps } from "../src/update.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -30,9 +30,12 @@ test("install kind and release asset", () => {
 function fakeRelease(tag: string, opts: { badSum?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "yxu-upd-"));
   dirs.push(dir);
-  writeFileSync(join(dir, "yxu"), "#!/bin/sh\necho new\n");
   const asset = platformAsset();
-  Bun.spawnSync(["tar", "-czf", join(dir, asset), "-C", dir, "yxu"]);
+  const zip = asset.endsWith(".zip");
+  const exe = zip ? "yxu.exe" : "yxu";
+  writeFileSync(join(dir, exe), "#!/bin/sh\necho new\n");
+  // Windows' bsdtar writes zip files (-a picks the format from the name).
+  Bun.spawnSync(zip ? [tarCommand(), "-a", "-cf", join(dir, asset), "-C", dir, exe] : ["tar", "-czf", join(dir, asset), "-C", dir, exe]);
   const archive = readFileSync(join(dir, asset));
   const sum = opts.badSum ? "0".repeat(64) : createHash("sha256").update(archive).digest("hex");
   const files: Record<string, string | Buffer> = { [asset]: archive, "checksums.txt": `${sum}  ${asset}\n` };

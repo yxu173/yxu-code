@@ -20,7 +20,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { CONFIG_VERSION, DEFAULT_YAML, validateConfig, type Config } from "./config.ts";
 import { installedPacks, lockPath, MANIFEST, packData, readLock, writeLock, type PackScope } from "./packs.ts";
@@ -280,10 +280,11 @@ export function loadLayers(root: string, opts: LoadOptions = {}): Loaded {
 
 /** Paths under the repo are shown relative to it, the home directory as ~. */
 export function display(file: string, root: string): string {
+  const slash = (p: string) => p.split(sep).join("/");
   const rel = relative(root, file);
-  if (!rel.startsWith("..") && !rel.startsWith("/")) return rel;
+  if (!rel.startsWith("..") && !isAbsolute(rel)) return slash(rel);
   const home = homedir();
-  return file.startsWith(`${home}/`) ? `~/${file.slice(home.length + 1)}` : file;
+  return file.startsWith(home + sep) ? `~/${slash(file.slice(home.length + 1))}` : file;
 }
 
 /** The layer that decides a key's value, and the file behind it. */
