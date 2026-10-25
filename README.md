@@ -93,6 +93,14 @@ Every file carries `version: 1`. A file written for a newer yxu is refused with 
 `/save` are validated against the merged result of all layers before anything is written.
 An error names the file that set the bad value.
 
+### Workflows, commands, prompts, hooks, themes
+
+Customization lives in files: `.yxu/workflows/*.yaml` and `.yxu/commands/*.md` for the team,
+and the same under `~/.config/yxu/` for yourself. A workflow can lint, have an agent fix what
+lint found, test, ask you at a gate, and open a PR. The interface command `/ship <title>` can
+run it, all without touching yxu's code. See **[docs/CUSTOMIZING.md](docs/CUSTOMIZING.md)**
+for step types, expressions, commands, prompt overrides, hooks, themes and key bindings.
+
 See [PLAN.md](PLAN.md) for the design and history and
 [docs/PUBLIC_PLAN.md](docs/PUBLIC_PLAN.md) for the customization roadmap.
 
@@ -255,7 +263,7 @@ streaming text deltas (`includePartialMessages`), conversation resume across tur
 ### Checks
 
 ```sh
-bun test                 # 132 tests, incl. test/tui.test.ts (keys, editor, layout, frames, interaction)
+bun test                 # 164 tests, incl. test/tui.test.ts (keys, editor, layout, frames, interaction)
 bunx tsc --noEmit
 bun scripts/snapshot.ts --at deciding --width 140 --height 46 [--ascii] [--html out.html]
 python3 scripts/pty-drive.py 110 32 <repo> script.json -- bun src/cli.ts tui --demo

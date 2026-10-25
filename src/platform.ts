@@ -28,6 +28,8 @@ export interface SpawnOptions {
   env?: Record<string, string | undefined>;
   /** Start in a new process group so killGroup() reaches everything it spawns. */
   detached?: boolean;
+  /** Text written to the child's stdin (otherwise stdin is closed). */
+  stdin?: string;
 }
 
 /** Run a command to completion, capturing output. Throws if the executable can't start. */
@@ -45,7 +47,14 @@ export interface Child {
 
 /** Start a command with stdin closed and stdout/stderr captured. */
 export function start(argv: string[], opts: SpawnOptions = {}): Child {
-  const proc = Bun.spawn(argv, { cwd: opts.cwd, env: opts.env, detached: opts.detached, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn(argv, {
+    cwd: opts.cwd,
+    env: opts.env,
+    detached: opts.detached,
+    stdin: opts.stdin === undefined ? "ignore" : new TextEncoder().encode(opts.stdin),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const result = Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]).then(
     async ([stdout, stderr]) => ({ code: await proc.exited, stdout, stderr }),
   );

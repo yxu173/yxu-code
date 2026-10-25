@@ -1,6 +1,8 @@
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { loadLayers } from "./config-layers.ts";
+import { condition, render } from "./expr.ts";
+import { buildKeymap } from "./keymap.ts";
 import type { AgentProfile } from "./types.ts";
 
 /** "90s", "15m", "1h" or plain seconds → milliseconds. */
@@ -27,8 +29,17 @@ const AgentSchema = z.object({
 
 const StepId = z.string().regex(/^[a-z][a-z0-9_-]*$/, "step ids are lowercase words");
 
-const PlanStep = z.object({
+/** Fields every step accepts. */
+const StepBase = {
   id: StepId,
+  description: z.string().optional().describe("What this step is for (shown while it runs)"),
+  if: z.union([z.string(), z.boolean()]).optional().describe('Run only when true, e.g. "{{verify.ok}}" or "plan.tasks.length > 3"'),
+  unless: z.union([z.string(), z.boolean()]).optional().describe("Skip when true"),
+  continue_on_error: z.boolean().optional().describe("Record a failure and keep going instead of stopping the workflow"),
+};
+
+const PlanStep = z.object({
+  ...StepBase,
   type: z.literal("plan"),
   /** Upper bound on how many tasks the planner may produce. */
   max_tasks: z.number().int().min(1).max(12).default(5),
@@ -36,17 +47,17 @@ const PlanStep = z.object({
 });
 
 const DelegateStep = z.object({
-  id: StepId,
+  ...StepBase,
   type: z.literal("delegate"),
   agent: z.string(),
   /** Run one task per item of a plan step's output, in parallel, then combine. */
   for_each: z.string().optional(),
-  /** Task text for a single delegate; supports {{goal}}, {{<step>.summary}}, {{<step>.output}}. */
+  /** Task text for a single delegate; a template ({{goal}}, {{inputs.x}}, {{<step>.output}}). */
   prompt: z.string().optional(),
 });
 
 const VerifyStep = z.object({
-  id: StepId,
+  ...StepBase,
   type: z.literal("verify"),
   /** Shell command; defaults to settings.verify. */
   command: z.string().optional(),
@@ -56,7 +67,7 @@ const VerifyStep = z.object({
 });
 
 const ReviewStep = z.object({
-  id: StepId,
+  ...StepBase,
   type: z.literal("review"),
   /** Agent that applies the reviewer's requested fixes. */
   fix_agent: z.string(),
@@ -64,13 +75,88 @@ const ReviewStep = z.object({
   instructions: z.string().optional(),
 });
 
-const StepSchema = z.discriminatedUnion("type", [PlanStep, DelegateStep, VerifyStep, ReviewStep]);
+const ShellStep = z.object({
+  ...StepBase,
+  type: z.literal("shell"),
+  command: z.string().describe("Shell command (a template; values are shell-quoted). Output feeds later steps as {{<id>.output}}"),
+  in: z.enum(["result", "repo"]).default("result").describe("result: the work so far (task worktree, or the repo before any change); repo: your checkout"),
+  timeout: Duration.optional(),
+  env: z.record(z.string(), z.string()).optional(),
+});
+
+const GateStep = z.object({
+  ...StepBase,
+  type: z.literal("gate"),
+  message: z.string().describe("Question shown before continuing (a template)"),
+});
+
+const ParallelStep = z.object({
+  ...StepBase,
+  type: z.literal("parallel"),
+  steps: z
+    .array(z.lazy(() => StepSchema))
+    .min(1)
+    .describe("Steps run at the same time; their changes are combined"),
+});
+
+const LoopStep = z.object({
+  ...StepBase,
+  type: z.literal("loop"),
+  steps: z
+    .array(z.lazy(() => StepSchema))
+    .min(1)
+    .describe("Steps repeated in order each round"),
+  until: z.union([z.string(), z.boolean()]).optional().describe("Stop once this is true (checked after each round)"),
+  max_rounds: z.number().int().min(1).max(20).default(3),
+});
+
+const CallStep = z.object({
+  ...StepBase,
+  type: z.literal("workflow"),
+  workflow: z.string().describe("Name of a pipeline workflow to run here"),
+  inputs: z.record(z.string(), z.string()).optional().describe("Inputs for that workflow (templates)"),
+  goal: z.string().optional().describe("Goal for that workflow (template; default: this workflow's goal)"),
+});
+
+type StepFields = z.infer<z.ZodObject<typeof StepBase>>;
+export type Step =
+  | z.infer<typeof PlanStep>
+  | z.infer<typeof DelegateStep>
+  | z.infer<typeof VerifyStep>
+  | z.infer<typeof ReviewStep>
+  | z.infer<typeof ShellStep>
+  | z.infer<typeof GateStep>
+  | z.infer<typeof CallStep>
+  | (StepFields & { type: "parallel"; steps: Step[] })
+  | (StepFields & { type: "loop"; steps: Step[]; until?: string | boolean; max_rounds: number });
+
+const StepSchema: z.ZodType<Step> = z.discriminatedUnion("type", [
+  PlanStep,
+  DelegateStep,
+  VerifyStep,
+  ReviewStep,
+  ShellStep,
+  GateStep,
+  ParallelStep,
+  LoopStep,
+  CallStep,
+]);
+
+const InputSchema = z.object({
+  description: z.string().optional(),
+  default: z.union([z.string(), z.number(), z.boolean()]).optional(),
+  /** Inputs without a default are required unless this says otherwise. */
+  required: z.boolean().optional(),
+});
 
 const WorkflowSchema = z.object({
   mode: z.enum(["auto", "pipeline"]).default("auto"),
+  description: z.string().optional().describe("Shown in /workflow"),
   allowed_agents: z.array(z.string()).optional(),
   instructions: z.string().optional(),
   steps: z.array(StepSchema).optional(),
+  inputs: z.record(z.string(), InputSchema).optional().describe("Values passed with --input name=value or by a command"),
+  outputs: z.record(z.string(), z.string()).optional().describe("Results reported at the end (templates)"),
 });
 
 /** Token counts: 200000, "200k", "1m". */
@@ -151,11 +237,33 @@ export const ConfigSchema = z.object({
     .default({ max_diff_chars: 12_000, concurrency: 3, verify_timeout: 600_000 }),
   context: ContextSchema,
   compact: CompactSchema,
+  hooks: z
+    .object({
+      before_run: z.array(z.string()).optional().describe("Before a run; a failing command blocks it"),
+      after_task: z.array(z.string()).optional().describe("After each agent task, in its worktree; file changes join the task"),
+      before_apply: z.array(z.string()).optional().describe("Before apply, in the task's worktree; a failing command blocks the apply"),
+      on_failure: z.array(z.string()).optional().describe("After a run that failed"),
+      on_complete: z.array(z.string()).optional().describe("After a run that succeeded"),
+    })
+    .optional()
+    .describe("Shell commands at lifecycle points; they get the event as JSON on stdin"),
+  ui: z
+    .object({
+      theme: z.string().default("instrument").describe("instrument, high-contrast, light, mono, or a file in ~/.config/yxu/themes"),
+      keys: z.record(z.string(), z.string()).default({}).describe('Rebind interface keys, e.g. { panel: ctrl+b } (see `yxu keys`)'),
+      panel: z.boolean().default(true).describe("Open the side panel at start"),
+      panel_sections: z
+        .array(z.enum(["context", "agents", "tasks", "cost"]))
+        .default(["context", "agents", "tasks", "cost"])
+        .describe("Which panel sections to show, in order"),
+      footer: z.boolean().default(true).describe("Show the key hints line"),
+    })
+    .default({ theme: "instrument", keys: {}, panel: true, panel_sections: ["context", "agents", "tasks", "cost"], footer: true })
+    .describe("The interactive interface: theme, keys, layout"),
 });
 
 export type RawAgent = z.infer<typeof AgentSchema>;
 export type Workflow = z.infer<typeof WorkflowSchema>;
-export type Step = z.infer<typeof StepSchema>;
 export type Config = z.infer<typeof ConfigSchema> & {
   /** Human-readable list of the files that make up this config. */
   source: string;
@@ -267,6 +375,11 @@ export function validateConfig(raw: unknown, source: string, where: (path: strin
     throw bad("compact.window", `compact.window must be "auto" or between 100k and 1m tokens`);
   }
   if (cfg.context.max_diff_chars) cfg.settings.max_diff_chars = cfg.context.max_diff_chars;
+  try {
+    buildKeymap(cfg.ui.keys);
+  } catch (e) {
+    throw bad("ui.keys", (e as Error).message);
+  }
   if (cfg.settings.resolver && !cfg.agents[cfg.settings.resolver]) {
     throw bad("settings.resolver", `settings.resolver "${cfg.settings.resolver}" is not an agent`);
   }
@@ -277,27 +390,71 @@ export function validateConfig(raw: unknown, source: string, where: (path: strin
     }
     if (wf.mode === "pipeline" && !wf.steps?.length) throw wbad("pipeline mode needs steps");
     if (wf.mode === "auto" && wf.steps) throw wbad("steps are only used in pipeline mode");
+    const syntax = (what: string, src: string | boolean | undefined, asCondition = false) => {
+      if (typeof src !== "string") return;
+      try {
+        if (asCondition) condition(src, {});
+        else render(src, {});
+      } catch (e) {
+        throw wbad(`${what}: ${(e as Error).message}`);
+      }
+    };
+    for (const [k, tpl] of Object.entries(wf.outputs ?? {})) syntax(`output "${k}"`, tpl);
     const seen = new Map<string, Step["type"]>();
-    for (const step of wf.steps ?? []) {
-      if (seen.has(step.id)) throw wbad(`duplicate step id "${step.id}"`);
-      const agents = [
-        step.type === "delegate" ? step.agent : undefined,
-        step.type === "verify" || step.type === "review" ? step.fix_agent : undefined,
-      ];
-      for (const a of agents) if (a && !cfg.agents[a]) throw wbad(`step "${step.id}" uses unknown agent "${a}"`);
-      if (step.type === "delegate") {
-        if (step.for_each) {
-          if (seen.get(step.for_each) !== "plan") throw wbad(`step "${step.id}": for_each must name an earlier plan step`);
-        } else if (!step.prompt) {
-          throw wbad(`step "${step.id}" needs a prompt or for_each`);
+    const walk = (steps: Step[]) => {
+      for (const step of steps) {
+        if (seen.has(step.id)) throw wbad(`duplicate step id "${step.id}"`);
+        if (["goal", "inputs", "head", "settings", "outputs"].includes(step.id)) throw wbad(`step id "${step.id}" is reserved`);
+        syntax(`step "${step.id}" if`, step.if, true);
+        syntax(`step "${step.id}" unless`, step.unless, true);
+        const agents = [
+          step.type === "delegate" ? step.agent : undefined,
+          step.type === "verify" || step.type === "review" ? step.fix_agent : undefined,
+        ];
+        for (const a of agents) if (a && !cfg.agents[a]) throw wbad(`step "${step.id}" uses unknown agent "${a}"`);
+        switch (step.type) {
+          case "delegate":
+            if (step.for_each) {
+              if (seen.get(step.for_each) !== "plan") throw wbad(`step "${step.id}": for_each must name an earlier plan step`);
+            } else if (!step.prompt) {
+              throw wbad(`step "${step.id}" needs a prompt or for_each`);
+            }
+            syntax(`step "${step.id}" prompt`, step.prompt);
+            break;
+          case "verify":
+            if (!step.command && !cfg.settings.verify) throw wbad(`step "${step.id}" needs a command (or set settings.verify)`);
+            break;
+          case "shell":
+            syntax(`step "${step.id}" command`, step.command);
+            break;
+          case "gate":
+            syntax(`step "${step.id}" message`, step.message);
+            break;
+          case "loop":
+            syntax(`step "${step.id}" until`, step.until, true);
+            break;
+          case "workflow": {
+            const target = cfg.workflows[step.workflow];
+            if (!target) throw wbad(`step "${step.id}" calls unknown workflow "${step.workflow}"`);
+            if (target.mode !== "pipeline") throw wbad(`step "${step.id}": workflow "${step.workflow}" is not a pipeline`);
+            for (const [k, tpl] of Object.entries(step.inputs ?? {})) syntax(`step "${step.id}" input "${k}"`, tpl);
+            break;
+          }
         }
+        seen.set(step.id, step.type);
+        if (step.type === "parallel" || step.type === "loop") walk(step.steps);
       }
-      if (step.type === "verify" && !step.command && !cfg.settings.verify) {
-        throw wbad(`step "${step.id}" needs a command (or set settings.verify)`);
-      }
-      seen.set(step.id, step.type);
-    }
+    };
+    walk(wf.steps ?? []);
   }
+  // Workflows calling workflows must not loop back on themselves.
+  const calls = (steps: Step[] = []): string[] =>
+    steps.flatMap((st) => (st.type === "workflow" ? [st.workflow] : st.type === "parallel" || st.type === "loop" ? calls(st.steps) : []));
+  const visit = (name: string, stack: string[]) => {
+    if (stack.includes(name)) throw bad(`workflows.${name}`, `workflows call each other in a cycle: ${[...stack, name].join(" → ")}`);
+    for (const next of calls(cfg.workflows[name]?.steps)) visit(next, [...stack, name]);
+  };
+  for (const name of Object.keys(cfg.workflows)) visit(name, []);
   return cfg;
 }
 

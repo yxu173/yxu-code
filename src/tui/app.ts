@@ -1,6 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { applyTask, diffStat, discardTask } from "../actions.ts";
+import { applyTask, applyWithHooks, diffStat, discardTask, type ActionResult } from "../actions.ts";
+import { hooksFor, withRunHooks } from "../hooks.ts";
 import { readTaskRecord } from "../combine.ts";
 import { getWorkflow, type Config, type Workflow } from "../config.ts";
 import { branchFor, excludeYxuDir, tryGit } from "../git.ts";
@@ -10,7 +11,9 @@ import { compactConversation, runOrchestrator, type OrchestratorRender, type Run
 import { saveConfigPatch } from "../config-edit.ts";
 import { display, FILE_LAYERS, LAYERS, loadLayers, originOf, type FileLayer } from "../config-layers.ts";
 import { explainRows } from "../config-explain.ts";
-import { COMMANDS, findCommand, onOff, paletteFor, parseCommandLine } from "./commands.ts";
+import { allCommands, COMMANDS, findCommand, onOff, paletteFor, parseCommandLine } from "./commands.ts";
+import { commandUsage, expandCommand, loadUserCommands, type UserCommand } from "../user-commands.ts";
+import { runVerify } from "../verify.ts";
 import { buildContextPrompt, formatTokens, parseTokensArg, resolveInclude, type ContextUsage } from "../context.ts";
 import { killAllSubagents } from "../runner.ts";
 import type { TaskResult } from "../types.ts";
@@ -18,7 +21,9 @@ import { Editor } from "./editor.ts";
 import { KeyParser, type Key } from "./keys.ts";
 import { Store, type ContextInfo, type Entry, type TaskView } from "./model.ts";
 import { recoveryHint } from "./recovery.ts";
-import { createTheme, type Theme } from "./theme.ts";
+import { createTheme, type Glyphs, type Palette, type Theme } from "./theme.ts";
+import { BUILTIN_THEMES, loadTheme, themeFiles, themesDir } from "./themes.ts";
+import { buildKeymap, KEY_ACTIONS, translateKey, type KeyAction, type Keymap } from "../keymap.ts";
 import { ModelCatalog } from "../models.ts";
 import type { CliName } from "../types.ts";
 import { computeLayout, conversationRows, renderFrame, type Frame } from "./view.ts";
@@ -36,6 +41,10 @@ export interface Engine {
     resume?: string;
     /** The live config (context/compact settings can change during a session). */
     cfg: Config;
+    /** Pipeline inputs (from /run or a command). */
+    inputs?: Record<string, string>;
+    /** Ask the user at a workflow gate. */
+    gate?: (message: string, stepId: string) => Promise<boolean>;
   }): Promise<RunOutcome>;
   /** Summarize the remembered orchestrator conversation now. Optional: not every engine can. */
   compact?(opts: { cfg: Config; sessionId: string; instructions?: string; abort: AbortController; render: OrchestratorRender }): Promise<CompactResult>;
@@ -47,28 +56,30 @@ export type CompactResult = Awaited<ReturnType<typeof compactConversation>>;
 export interface TaskBackend {
   exists(id: string): boolean;
   diff(id: string): string;
-  apply(id: string): ReturnType<typeof applyTask>;
+  apply(id: string): ActionResult | Promise<ActionResult>;
   discard(id: string): ReturnType<typeof discardTask>;
 }
 
-export function gitBackend(root: string): TaskBackend {
+export function gitBackend(root: string, cfg: () => Config): TaskBackend {
   return {
     exists: (id) => !!tryGit(root, "branch", "--list", branchFor(id)).out,
     diff: (id) => {
       const r = tryGit(root, "diff", `HEAD...${branchFor(id)}`);
       return (r.ok && r.out) || readTaskRecord(root, id)?.diff || "";
     },
-    apply: (id) => applyTask(root, id),
+    apply: (id) => (hooksFor(cfg(), "before_apply").length ? applyWithHooks(cfg(), root, id) : applyTask(root, id)),
     discard: (id) => discardTask(root, id),
   };
 }
 
 export function productionEngine(root: string): Engine {
   return {
-    run: ({ goal, workflow, render, abort, session, resume, cfg }) =>
-      workflow.mode === "pipeline"
-        ? runPipeline({ goal, cfg, workflow, root, render, abort, session })
-        : runOrchestrator({ goal, cfg, workflow, root, render, abort, session, resume }),
+    run: ({ goal, workflow, render, abort, session, resume, cfg, inputs, gate }) =>
+      withRunHooks(cfg, root, { goal, workflow: workflow.name, session, signal: abort.signal }, () =>
+        workflow.mode === "pipeline"
+          ? runPipeline({ goal, cfg, workflow, root, render, abort, session, inputs, gate })
+          : runOrchestrator({ goal, cfg, workflow, root, render, abort, session, resume }),
+      ),
     compact: ({ cfg, sessionId, instructions, abort, render }) => compactConversation({ cfg, root, sessionId, instructions, abort, render }),
   };
 }
@@ -134,10 +145,19 @@ export class App {
       if (this.store.state.palette) this.updatePalette();
     });
     this.workflow = getWorkflow(this.cfg, o.workflow);
-    this.backend = o.backend ?? gitBackend(o.root);
+    this.backend = o.backend ?? gitBackend(o.root, () => this.cfg);
     this.store = new Store(this.contextInfo(), { demo: o.demo, panelOpen: true });
     this.editor = new Editor(this.loadHistory());
     this.store.subscribe(() => this.requestRender());
+    const ui = this.cfg.ui;
+    this.store.set({ panelOpen: ui.panel, layout: { sections: ui.panel_sections, footer: ui.footer } });
+    try {
+      this.keymap = buildKeymap(ui.keys);
+    } catch (e) {
+      this.fail((e as Error).message, "using the default keys");
+    }
+    if (ui.theme !== o.theme.name) this.switchTheme(ui.theme, true);
+    if (!o.demo) this.reloadUserCommands();
   }
 
   // ── lifecycle ──────────────────────────────────────────────────────────────
@@ -190,7 +210,10 @@ export class App {
 
   private paletteDismissed = false;
 
-  key(k: Key) {
+  key(raw: Key) {
+    const st = this.store.state;
+    const k = translateKey(raw, this.keymap, { moment: st.gate ? "gate" : st.status === "deciding" ? "decision" : "always", draftEmpty: this.editor.isEmpty });
+    if (!k) return;
     if (this.paletteKey(k)) return;
     const before = this.editor.text;
     this.keyInner(k);
@@ -245,7 +268,7 @@ export class App {
     const head = p.mode === "command" ? "/" : cut >= 0 ? text.slice(0, cut) : text;
     const typedToken = p.mode === "command" ? text.slice(1) : cut >= 0 ? text.slice(cut) : "";
     const next = head + item.value;
-    const cmd = findCommand(p.mode === "command" ? item.value : (p.command ?? ""));
+    const cmd = findCommand(p.mode === "command" ? item.value : (p.command ?? ""), this);
     // Will another argument follow? (the palette has suggestions for the next position)
     const more = !!cmd && (paletteFor(this, `${next} `)?.items.length ?? 0) > 0;
     const needsArg = p.mode === "command" && !!cmd?.needsArgs;
@@ -267,8 +290,11 @@ export class App {
     const working = st.status === "working" || st.status === "cancelling";
 
     if (st.helpOpen) {
-      if (k.name === "escape" || (k.name === "char" && k.text === "?") || k.name === "enter") this.store.set({ helpOpen: false });
-      else if (k.name === "char" && k.ctrl && k.text === "c") this.store.set({ helpOpen: false });
+      const step = { up: -1, down: 1, pageup: -10, pagedown: 10 }[k.name as string];
+      if (step) return this.store.set({ helpScroll: Math.max(0, (st.helpScroll ?? 0) + step) });
+      if (k.name === "home") return this.store.set({ helpScroll: 0 });
+      if (k.name === "escape" || (k.name === "char" && k.text === "?") || k.name === "enter") this.store.set({ helpOpen: false, helpScroll: 0 });
+      else if (k.name === "char" && k.ctrl && k.text === "c") this.store.set({ helpOpen: false, helpScroll: 0 });
       return;
     }
 
@@ -315,6 +341,13 @@ export class App {
           return this.store.changed();
       }
       return;
+    }
+
+    // A gate waits for y/n (enter continues, esc stops) while the draft is empty.
+    if (st.gate && e.isEmpty) {
+      const t = k.name === "char" && !k.ctrl && !k.alt ? k.text?.toLowerCase() : undefined;
+      if (t === "y" || k.name === "enter") return this.answerGate(true);
+      if (t === "n" || k.name === "escape") return this.answerGate(false);
     }
 
     // Decision keys act only when the draft is empty, so typing a follow-up still works.
@@ -480,10 +513,10 @@ export class App {
   /** Run a slash command line via the registry. */
   runCommand(line: string) {
     const { name, args } = parseCommandLine(line);
-    const cmd = findCommand(name);
+    const cmd = findCommand(name, this);
     if (!cmd) {
       const shared = (c: string) => [...name].findIndex((ch, i) => c[i] !== ch) >>> 0; // common prefix length
-      const near = COMMANDS.filter((c) => c.name.startsWith(name.slice(0, 2)))
+      const near = allCommands(this).filter((c) => c.name.startsWith(name.slice(0, 2)))
         .sort((a, b) => Math.min(shared(b.name), name.length) - Math.min(shared(a.name), name.length))
         .map((c) => `/${c.name}`)
         .slice(0, 4);
@@ -565,8 +598,11 @@ export class App {
     }
   }
 
+  private themeLook: { palette?: Palette; glyphs?: Partial<Glyphs> } = {};
+
   setTheme(opts: { ascii?: boolean; reducedMotion?: boolean }) {
     this.theme = createTheme({
+      ...this.themeLook,
       depth: this.theme.depth,
       ascii: opts.ascii ?? this.theme.ascii,
       reducedMotion: opts.reducedMotion ?? this.theme.reducedMotion,
@@ -574,6 +610,44 @@ export class App {
     });
     this.o.invalidate?.();
     this.store.changed();
+  }
+
+  /** `/theme <name>`: switch colors now (and /save keeps it in ui.theme). */
+  switchTheme(name: string, quiet = false) {
+    try {
+      const t = loadTheme(name);
+      this.themeLook = { palette: t.palette, glyphs: t.glyphs };
+    } catch (e) {
+      return this.fail((e as Error).message, "type /theme to list themes");
+    }
+    this.setTheme({});
+    if (quiet) return;
+    this.setConfig(["ui", "theme"], name);
+    this.note(`Theme ${name}${this.theme.depth === "none" ? " (colors are off in this terminal)" : ""} — for this session; /save keeps it.`);
+  }
+
+  listThemes() {
+    const files = themeFiles();
+    this.note(
+      [
+        `**Themes** (current: ${this.theme.name})`,
+        ...Object.entries(BUILTIN_THEMES).map(([n, t]) => `- \`${n}\` — ${t.about}`),
+        ...files.map((n) => `- \`${n}\` — ${display(join(themesDir(), n), this.o.root)}.yaml`),
+        "",
+        "Make your own: ~/.config/yxu/themes/<name>.yaml with `extends:` and `colors:` (#rrggbb per role).",
+      ].join("\n"),
+    );
+  }
+
+  /** The effective key bindings. */
+  keymap: Keymap = buildKeymap();
+
+  showKeys() {
+    const rows = Object.entries(this.keymap.bindings).map(([a, spec]) => {
+      const changed = spec !== KEY_ACTIONS[a as KeyAction].key;
+      return `- \`${spec}\` ${a}${changed ? " *(yours)*" : ""} — ${KEY_ACTIONS[a as KeyAction].about}`;
+    });
+    this.note(["**Keys** (rebind with `ui.keys` in your config, e.g. `panel: ctrl+b`)", ...rows, ...this.keymap.warnings.map((w) => `- ⚠ ${w}`)].join("\n"));
   }
 
   /** Forget the remembered orchestrator conversation (next message starts fresh). */
@@ -609,7 +683,7 @@ export class App {
     const id = this.resolveTask(arg ?? "");
     if (!id) return this.fail(arg ? `no task matching "${arg}"` : `/${kind} needs a task id`, "type /tasks to list task ids");
     if (kind === "diff") return this.showDiff(id);
-    if (kind === "apply") return this.applyTask(id);
+    if (kind === "apply") return void this.applyTask(id);
     return this.discardTask(id);
   }
 
@@ -892,7 +966,81 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
 
   // ── runs ───────────────────────────────────────────────────────────────────
 
-  private async startRun(goal: string) {
+  /** Custom commands from .yxu/commands and ~/.config/yxu/commands. */
+  userCommands: UserCommand[] = [];
+
+  reloadUserCommands(report = false) {
+    let errors: string[] = [];
+    try {
+      ({ commands: this.userCommands, errors } = loadUserCommands(this.o.root, this.cfg, COMMANDS.flatMap((c) => [c.name, ...(c.aliases ?? [])])));
+    } catch (e) {
+      errors = [(e as Error).message];
+    }
+    this.store.set({ customHelp: this.userCommands.map((c) => [`/${c.name}${c.args.length ? ` ${commandUsage(c)}` : ""}`, c.description]) });
+    if (errors.length) this.fail(`${errors.length} custom command${errors.length === 1 ? "" : "s"} could not be loaded`, errors.join("\n"));
+    if (!report) return;
+    if (!this.userCommands.length) {
+      return this.note("No custom commands yet. Add Markdown files to .yxu/commands/ (team) or ~/.config/yxu/commands/ (you), e.g. .yxu/commands/add-tests.md", "info");
+    }
+    this.note(
+      ["**Your commands**", ...this.userCommands.map((c) => `- \`/${c.name}${c.args.length ? ` ${commandUsage(c)}` : ""}\` — ${c.description} · ${c.kind} · ${display(c.file, this.o.root)}`)].join("\n"),
+    );
+  }
+
+  /** Run a custom command: send its prompt, run its workflow, or run its shell command. */
+  async runUserCommand(c: UserCommand, args: string[]) {
+    let x;
+    try {
+      x = expandCommand(c, args, this.cfg);
+    } catch (e) {
+      return this.fail((e as Error).message);
+    }
+    if (x.kind === "prompt") return this.startGoal(x.goal, { workflow: x.workflow });
+    if (x.kind === "workflow") return this.startGoal(x.goal || `/${c.name} ${args.join(" ")}`.trim(), { workflow: x.workflow, inputs: x.inputs });
+    const s = this.store;
+    const a = s.add({ kind: "activity", category: "shell", title: `/${c.name}\t${x.command.split("\n")[0]}`, meta: "", state: "running", details: [], expanded: false, taskId: `cmd:${c.name}:${Date.now()}`, startedAt: Date.now() });
+    const v = await runVerify(this.o.root, x.command, this.cfg.settings.verify_timeout);
+    s.update(a, {
+      state: v.ok ? "ok" : "failed",
+      meta: `${v.ok ? "ok" : v.timedOut ? "timed out" : `exit ${v.exitCode}`} · ${(v.durationMs / 1000).toFixed(1)}s`,
+      details: v.output ? v.output.split("\n") : ["(no output)"],
+      expanded: true,
+    });
+  }
+
+  /** `/run <workflow> name=value … [goal]`: run a workflow once with inputs. */
+  runWorkflow(args: string[]) {
+    const [name, ...rest] = args;
+    if (!name) return this.fail("which workflow?", "usage: /run <workflow> [name=value]… [goal]");
+    let wf: Workflow & { name: string };
+    try {
+      wf = getWorkflow(this.cfg, name);
+    } catch (e) {
+      return this.fail((e as Error).message, "type /workflow to list workflows");
+    }
+    const inputs: Record<string, string> = {};
+    let i = 0;
+    for (; i < rest.length && /^[\w-]+=/.test(rest[i]!); i++) {
+      const eq = rest[i]!.indexOf("=");
+      inputs[rest[i]!.slice(0, eq)] = rest[i]!.slice(eq + 1);
+    }
+    const goal = rest.slice(i).join(" ").trim();
+    if (wf.mode !== "pipeline") {
+      if (Object.keys(inputs).length) return this.fail(`"${wf.name}" is an ${wf.mode} workflow; inputs are for pipelines`);
+      if (!goal) return this.fail(`"${wf.name}" needs a goal`, `/run ${wf.name} <what to do>`);
+    }
+    return this.startGoal(goal || `run ${wf.name}`, { workflow: wf, inputs });
+  }
+
+  /** Start a run now (used by /run and custom commands). */
+  startGoal(goal: string, run?: { workflow?: Workflow & { name: string }; inputs?: Record<string, string> }) {
+    const st = this.store.state;
+    if (st.status === "working" || st.status === "cancelling") return this.flash("an operation is running — esc cancels it", 2500);
+    if (st.status === "deciding") this.clearDecision(true);
+    this.running = this.startRun(goal, run);
+  }
+
+  private async startRun(goal: string, run?: { workflow?: Workflow & { name: string }; inputs?: Record<string, string> }) {
     const s = this.store;
     s.set({ turn: s.state.turn + 1 });
     const time = new Date();
@@ -901,7 +1049,8 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
       label: `${this.sdkSessionId ? "continuing" : "turn"} ${s.state.turn} · ${time.toTimeString().slice(0, 5)}`,
     });
     s.add({ kind: "user", text: goal, time });
-    s.setStatus("working", this.workflow.mode === "pipeline" ? `pipeline ${this.workflow.name}` : "orchestrator planning");
+    const wf = run?.workflow ?? this.workflow;
+    s.setStatus("working", wf.mode === "pipeline" ? `pipeline ${wf.name}` : "orchestrator planning");
     this.startTicker();
     this.abort = new AbortController();
     this.streaming = undefined;
@@ -912,12 +1061,14 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     try {
       outcome = await this.o.engine.run({
         goal,
-        workflow: this.workflow,
+        workflow: run?.workflow ?? this.workflow,
         render: this.renderAdapter(),
         abort: this.abort,
         session: this.session,
         resume: this.cfg.context.memory ? this.sdkSessionId : undefined,
         cfg: this.cfg,
+        inputs: run?.inputs,
+        gate: (message, stepId) => this.askGate(message, stepId),
       });
     } catch (e) {
       thrown = e;
@@ -972,7 +1123,30 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     }, delay);
   }
 
+  private gateAnswer?: (ok: boolean) => void;
+
+  /** Show a gate and wait for the user (y continues, n stops the workflow). */
+  askGate(message: string, stepId: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      this.gateAnswer = resolve;
+      this.store.set({ gate: { message, stepId }, scroll: 0 });
+      this.store.setStatus("working", `waiting for you at ${stepId}`);
+    });
+  }
+
+  answerGate(ok: boolean) {
+    const gt = this.store.state.gate;
+    const done = this.gateAnswer;
+    if (!gt || !done) return;
+    this.gateAnswer = undefined;
+    this.store.set({ gate: undefined });
+    this.store.add({ kind: "notice", tone: ok ? "ok" : "attention", text: `${ok ? "Continued" : "Stopped"} at ${gt.stepId}: ${gt.message}` });
+    this.store.setStatus("working", ok ? `continuing after ${gt.stepId}` : "stopping");
+    done(ok);
+  }
+
   cancel() {
+    this.answerGate(false);
     if (!this.abort || this.abort.signal.aborted) return;
     this.store.setStatus("cancelling", "stopping agents");
     this.abort.abort();
@@ -1075,7 +1249,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
         closeRead();
         if (type === "fix") s.add({ kind: "notice", tone: "attention", text: `${note ?? "fixing"} (round ${index}/${total})` });
         else {
-          s.add({ kind: "step", index, total, name: id, type });
+          s.add({ kind: "step", index, total, name: note ? `${id} · ${note}` : id, type });
           s.set({ statusNote: `step ${index}/${total} · ${id}` });
         }
       },
@@ -1145,6 +1319,24 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
           const t = s.state.tasks.find((x) => x.taskId === id);
           if (t) s.upsertTask({ ...t, state: "discarded", pending: false });
         },
+        onShellStart: ({ id, command }) => {
+          closeRead();
+          s.add({ kind: "activity", category: "shell", title: `shell\t${command.split("\n")[0]}`, meta: "", state: "running", details: [], expanded: false, taskId: `shell:${id}:${Date.now()}`, startedAt: Date.now() });
+          s.set({ statusNote: `running ${id}` });
+        },
+        onShellEnd: ({ result: v, task }) => {
+          const a = this.store.activities().findLast((x) => x.category === "shell" && x.state === "running");
+          if (!a) return;
+          const outcome = v.ok ? "ok" : v.timedOut ? "timed out" : `failed · exit ${v.exitCode}`;
+          const changed = task ? ` · ${task.filesChanged.length} file${task.filesChanged.length === 1 ? "" : "s"} changed` : "";
+          s.update(a, {
+            state: v.ok ? "ok" : "failed",
+            meta: `${outcome}${changed} · ${(v.durationMs / 1000).toFixed(1)}s`,
+            details: [...(v.output ? v.output.split("\n") : ["(no output)"]), ...(task ? ["", `task ${task.taskId}: ${task.filesChanged.join(", ")}`] : [])],
+            expanded: !v.ok,
+          });
+          if (task) s.upsertTask({ taskId: task.taskId, agent: "shell", state: "ok", title: a.title.split("\t")[1] ?? "shell", files: task.filesChanged.length, pending: true });
+        },
       },
     };
   }
@@ -1212,7 +1404,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
       return;
     }
     this.store.set({ decision: undefined });
-    if (choice === "apply") this.applyTask(d.taskId);
+    if (choice === "apply") await this.applyTask(d.taskId);
     else this.discardTask(d.taskId);
     if (!this.offerDecision() && this.store.state.status !== "fault") this.settle();
   }
@@ -1227,8 +1419,11 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     this.store.set({ scroll: 0 });
   }
 
-  private applyTask(id: string) {
-    const r = this.backend.apply(id);
+  private async applyTask(id: string) {
+    const pending = this.backend.apply(id);
+    if (pending instanceof Promise) this.store.setStatus("working", "before_apply hooks");
+    const r = await pending;
+    if (pending instanceof Promise && this.store.state.status === "working") this.store.setStatus("ready");
     if (r.ok) {
       this.store.add({ kind: "notice", tone: "ok", text: `Applied. ${r.message}.` });
       for (const t of this.store.state.tasks) if (t.taskId === id) this.store.upsertTask({ ...t, state: "applied", pending: false });

@@ -1,6 +1,6 @@
 /**
  * Render TUI frames headlessly (demo engine) for visual review.
- *   bun scripts/snapshot.ts [--width 140] [--height 44] [--ascii] [--reduced-motion] [--html out.html] [--at working|deciding|help|welcome|fault]
+ *   bun scripts/snapshot.ts [--width 140] [--height 44] [--ascii] [--reduced-motion] [--html out.html] [--at working|deciding|help|welcome|fault] [--theme name]
  * Prints the frame as plain text; with --html also writes a styled HTML page of the ANSI frame.
  */
 import { writeFileSync } from "node:fs";
@@ -9,6 +9,7 @@ import { parseConfig, DEFAULT_YAML } from "../src/config.ts";
 import { App, type Engine } from "../src/tui/app.ts";
 import { demoBackend, demoEngine } from "../src/tui/demo.ts";
 import { createTheme } from "../src/tui/theme.ts";
+import { loadTheme } from "../src/tui/themes.ts";
 import type { Frame } from "../src/tui/view.ts";
 
 const { values } = parseArgs({
@@ -20,12 +21,16 @@ const { values } = parseArgs({
     html: { type: "string" },
     at: { type: "string", default: "deciding" },
     panel: { type: "string", default: "open" },
+    theme: { type: "string", default: "instrument" },
   },
 });
 const width = Number(values.width);
 const height = Number(values.height);
-const theme = createTheme({ depth: "truecolor", ascii: values.ascii ?? false, reducedMotion: values["reduced-motion"] ?? false });
+const look = loadTheme(values.theme!);
+const theme = createTheme({ ...look, depth: "truecolor", ascii: values.ascii ?? false, reducedMotion: values["reduced-motion"] ?? false });
+const bgCss = `rgb(${look.palette.rgb.bg.join(",")})`;
 const cfg = parseConfig(DEFAULT_YAML, "yxu.yaml");
+cfg.ui.theme = values.theme!;
 let frame: Frame = { rows: [] };
 let app: App;
 const failing: Engine = {
@@ -114,8 +119,8 @@ if (values.html) {
   };
   const cursor = frame.cursor;
   const html = `<!doctype html><meta charset="utf-8"><title>yxu tui</title>
-<style>body{margin:0;background:#0b0d11;display:flex;justify-content:center;padding:24px}
-pre{margin:0;font:14px/1.32 "JetBrains Mono","DejaVu Sans Mono",Menlo,monospace;background:#0b0d11;white-space:pre}
+<style>body{margin:0;background:${bgCss};display:flex;justify-content:center;padding:24px}
+pre{margin:0;font:14px/1.32 "JetBrains Mono","DejaVu Sans Mono",Menlo,monospace;background:${bgCss};white-space:pre}
 .c{display:inline-block;text-align:center;overflow:visible}</style>
 <pre>${frame.rows.map(toHtml).join("\n")}</pre>`;
   writeFileSync(values.html, html);

@@ -19,7 +19,7 @@ export type Entry = Base &
     | { kind: "assistant"; text: string; streaming: boolean }
     | {
         kind: "activity";
-        category: "delegate" | "combine" | "verify" | "read" | "discard" | "tool";
+        category: "delegate" | "combine" | "verify" | "read" | "discard" | "tool" | "shell";
         title: string;
         /** Short facts shown on the collapsed row, e.g. "37s · calc.py". */
         meta: string;
@@ -84,6 +84,8 @@ export interface State {
   /** When the current operation started (for the elapsed timer). */
   since?: number;
   decision?: Decision;
+  /** A workflow gate step waiting for the user's answer. */
+  gate?: { message: string; stepId: string };
   context: ContextInfo;
   tasks: TaskView[];
   activeSlots: number;
@@ -101,6 +103,12 @@ export interface State {
   selected?: number;
   panelOpen: boolean;
   helpOpen: boolean;
+  /** Panel sections in order, and whether the key-hint footer shows (ui.* config). */
+  layout?: { sections: string[]; footer: boolean };
+  /** Custom commands from .yxu/commands, for help: [usage, description]. */
+  customHelp?: [string, string][];
+  /** Rows scrolled down in the help overlay. */
+  helpScroll?: number;
   /** Transient footer message (e.g. "press ctrl+c again to exit"). */
   flash?: string;
   demo: boolean;

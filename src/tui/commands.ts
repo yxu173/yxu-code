@@ -7,6 +7,8 @@ import { parseDuration } from "../config.ts";
 import { tryGit } from "../git.ts";
 import { which } from "../platform.ts";
 import type { CliName } from "../types.ts";
+import { commandUsage, type UserCommand } from "../user-commands.ts";
+import { BUILTIN_THEMES, themeFiles } from "./themes.ts";
 import type { App } from "./app.ts";
 
 export interface Suggestion {
@@ -23,7 +25,7 @@ export interface Command {
   /** Argument synopsis, e.g. "<task>" or "[name]". */
   usage?: string;
   description: string;
-  group: "session" | "orchestrator" | "agents" | "context" | "tasks" | "interface";
+  group: "session" | "orchestrator" | "agents" | "context" | "tasks" | "interface" | "custom";
   /** True when the command needs at least one argument (the palette then waits for it). */
   needsArgs?: boolean;
   /** Also match argument suggestions by description (e.g. "free", "1m ctx" for models). */
@@ -136,6 +138,27 @@ export const COMMANDS: Command[] = [
   { name: "quit", aliases: ["exit"], description: "Exit yxu (pending results are listed on exit)", group: "session", run: (app) => app.quit() },
 
   // ── orchestrator ──
+  {
+    name: "commands",
+    description: "List your own commands (.yxu/commands) and reload them from disk",
+    group: "session",
+    run: (app) => app.reloadUserCommands(true),
+  },
+  {
+    name: "run",
+    usage: "<workflow> [name=value]… [goal]",
+    description: "Run a workflow once, with inputs (e.g. /run release version=1.2.0)",
+    group: "orchestrator",
+    complete: (app, i, before) => {
+      if (i === 0) return Object.entries(app.cfg.workflows).map(([n, w]) => ({ value: n, description: w.description ?? w.mode }));
+      const wf = app.cfg.workflows[before[0] ?? ""];
+      const given = new Set(before.slice(1).map((b) => b.split("=")[0]));
+      return Object.entries(wf?.inputs ?? {})
+        .filter(([k]) => !given.has(k))
+        .map(([k, d]) => ({ value: `${k}=`, description: `${d.description ?? "input"}${d.default !== undefined ? ` (default ${d.default})` : ""}` }));
+    },
+    run: (app, args) => app.runWorkflow(args),
+  },
   {
     name: "workflow",
     usage: "[name]",
@@ -407,6 +430,21 @@ export const COMMANDS: Command[] = [
     run: (app, [v]) => app.store.set({ panelOpen: onOff(v) ?? !app.store.state.panelOpen }),
   },
   {
+    name: "theme",
+    usage: "[name]",
+    description: "Switch the color theme, or list themes",
+    group: "interface",
+    complete: (_app, i) =>
+      i === 0 ? [...Object.entries(BUILTIN_THEMES).map(([n, t]) => ({ value: n, description: t.about })), ...themeFiles().map((n) => ({ value: n, description: "your theme file" }))] : [],
+    run: (app, [name]) => (name ? app.switchTheme(name) : app.listThemes()),
+  },
+  {
+    name: "keys",
+    description: "Show the key bindings (rebind them with ui.keys)",
+    group: "interface",
+    run: (app) => app.showKeys(),
+  },
+  {
     name: "motion",
     usage: "on|off",
     description: "Pulse animation (off = reduced motion)",
@@ -432,9 +470,33 @@ export const COMMANDS: Command[] = [
   },
 ];
 
-export function findCommand(name: string): Command | undefined {
+/** Built-in commands plus the user's own (.yxu/commands), as one list. */
+export function allCommands(app?: App): Command[] {
+  return [...COMMANDS, ...(app?.userCommands ?? []).map(customCommand)];
+}
+
+function customCommand(c: UserCommand): Command {
+  return {
+    name: c.name,
+    usage: commandUsage(c) || undefined,
+    description: `${c.description}${c.kind === "prompt" ? "" : ` (${c.kind})`}`,
+    group: "custom",
+    needsArgs: c.args.some((a) => a.required),
+    complete: (app, i) => {
+      // The last arg takes the rest of the line, so keep completing it.
+      const a = c.args[Math.min(i, c.args.length - 1)];
+      if (!a || (i >= c.args.length && a.complete !== "file")) return [];
+      if (a.complete === "agent") return Object.entries(app.cfg.agents).map(([n, x]) => ({ value: n, description: `${x.cli} · ${x.model ?? "default"}` }));
+      if (a.complete === "workflow") return Object.entries(app.cfg.workflows).map(([n, w]) => ({ value: n, description: w.description ?? w.mode }));
+      return [];
+    },
+    run: (app, args) => app.runUserCommand(c, args),
+  };
+}
+
+export function findCommand(name: string, app?: App): Command | undefined {
   const n = name.toLowerCase();
-  return COMMANDS.find((c) => c.name === n || c.aliases?.includes(n));
+  return allCommands(app).find((c) => c.name === n || c.aliases?.includes(n));
 }
 
 /** Split a command line into name and arguments ("/agent coder model x/y"). */
@@ -479,6 +541,14 @@ function rank(items: Suggestion[], prefix: string, key: (s: Suggestion) => strin
     .map((x) => x.s);
 }
 
+/** True when argument `i` of a custom command completes repo files. */
+function fileArg(app: App, cmd: Command, i: number): boolean {
+  if (cmd.group !== "custom") return false;
+  const c = app.userCommands.find((u) => u.name === cmd.name);
+  const a = c?.args[Math.min(i, (c?.args.length ?? 1) - 1)];
+  return a?.complete === "file";
+}
+
 /** What the palette should show for the current draft, or undefined when it shouldn't open. */
 export function paletteFor(app: App, text: string): PaletteState | undefined {
   if (!text.startsWith("/") || text.includes("\n")) return undefined;
@@ -486,14 +556,14 @@ export function paletteFor(app: App, text: string): PaletteState | undefined {
   const space = body.search(/\s/);
   if (space === -1) {
     const items = rank(
-      COMMANDS.map((c) => ({ value: c.name, label: `/${c.name}${c.usage ? ` ${c.usage}` : ""}`, description: c.description })),
+      allCommands(app).map((c) => ({ value: c.name, label: `/${c.name}${c.usage ? ` ${c.usage}` : ""}`, description: c.description })),
       body,
       (s) => s.value,
       true,
     );
     return items.length ? { items, selected: 0, mode: "command" } : undefined;
   }
-  const cmd = findCommand(body.slice(0, space));
+  const cmd = findCommand(body.slice(0, space), app);
   if (!cmd) return undefined;
   const parts = body.slice(space).split(/\s+/);
   parts.shift(); // leading empty from the separator
@@ -501,7 +571,7 @@ export function paletteFor(app: App, text: string): PaletteState | undefined {
   const before = parts;
   // /context add <file> completes from the repository.
   const raw =
-    cmd.name === "context" && before.length === 1 && before[0] === "add"
+    (cmd.name === "context" && before.length === 1 && before[0] === "add") || fileArg(app, cmd, before.length)
       ? fileSuggestions(app, current)
       : (cmd.complete?.(app, before.length, before) ?? []);
   const items = rank(raw, current, (s) => s.value, cmd.searchDescriptions).filter((s) => s.value !== current || raw.length > 1);

@@ -6,7 +6,7 @@ import { DEFAULT_YAML, getWorkflow, loadConfig, toProfile, type Config } from ".
 import { excludeFromGit } from "./config-edit.ts";
 import { loadLayers } from "./config-layers.ts";
 import { buildContextPrompt, compactSettings, formatTokens, settingSources } from "./context.ts";
-import { applyTask, discardTask } from "./actions.ts";
+import { applyWithHooks, discardTask } from "./actions.ts";
 import { combineTasks, readTaskRecord } from "./combine.ts";
 import { repoRoot } from "./git.ts";
 import { Session, TaskOps } from "./ops.ts";
@@ -15,6 +15,9 @@ import { orchestratorPrompt, runOrchestrator, sessionPath, type OrchestratorRend
 import { createYxuServer, SERVER_NAME, TOOL_NAMES } from "./orchestrator/tools.ts";
 import { claudeExecutable, isCompiled, runAttached, runSync, VERSION, which } from "./platform.ts";
 import { update } from "./update.ts";
+import { withRunHooks } from "./hooks.ts";
+import { commandUsage, expandCommand, loadUserCommands } from "./user-commands.ts";
+import { runVerify } from "./verify.ts";
 import { killAllSubagents, newTaskId, runTask } from "./runner.ts";
 import type { AgentProfile, CliName, TaskResult } from "./types.ts";
 
@@ -24,8 +27,9 @@ Usage:
   yxu                       open the interactive interface (same as yxu tui)
   yxu tui [-w workflow] [--ascii] [--reduced-motion] [--no-color] [--demo]
                             interactive interface; --demo replays a scripted run (no agents)
-  yxu run "<goal>" [-w workflow] [--model M] [--budget USD]
-                            Claude (Opus) plans and delegates to your local agents
+  yxu run "<goal>" [-w workflow] [--model M] [--budget USD] [-i name=value]... [--yes]
+                            Claude (Opus) plans and delegates to your local agents;
+                            pipelines take --input values, --yes approves their gates
   yxu chat ["<first message>"] [-w workflow] [--model M] [--allow-edits] [--user-settings] [-p]
                             interactive Claude Code with the yxu tools
   yxu mcp [-w workflow]     stdio MCP server with the yxu tools (for any MCP client)
@@ -40,6 +44,10 @@ Usage:
   yxu apply <task-id>       merge the task branch into your current branch
   yxu discard <task-id>     delete the task worktree and branch
   yxu init                  write a starter yxu.yaml in the repo root
+  yxu run "/<command> [args]"   run one of your commands (.yxu/commands/<command>.md)
+  yxu commands              list your commands
+  yxu keys                  the interface key bindings (rebind with ui.keys)
+  yxu prompts [show <name>] built-in prompts and your overrides (.yxu/prompts/<name>.md)
   yxu config [explain|get|set|unset|paths|migrate|schema]
                             layered config: user → yxu.yaml → yxu.local.yaml → YXU_* → --set
   yxu agents                list configured agents and workflows
@@ -184,17 +192,43 @@ async function run(argv: string[]) {
       model: { type: "string", short: "m" },
       budget: { type: "string" },
       set: { type: "string", multiple: true },
+      input: { type: "string", short: "i", multiple: true },
+      yes: { type: "boolean", short: "y" },
     },
   });
-  const goal = positionals.join(" ").trim();
-  if (!goal) die('missing goal, e.g. yxu run "add a --verbose flag"');
+  let goal = positionals.join(" ").trim();
+  const inputs: Record<string, string> = {};
+  for (const kv of values.input ?? []) {
+    const eq = kv.indexOf("=");
+    if (eq < 1) die(`--input expects name=value, got "${kv}"`);
+    inputs[kv.slice(0, eq)] = kv.slice(eq + 1);
+  }
 
   const root = repoRoot(process.cwd());
   const sets = [...(values.set ?? [])];
   if (values.model) sets.push(`orchestrator.model=${values.model}`);
   if (values.budget) sets.push(`orchestrator.max_budget_usd=${values.budget}`);
   const cfg = loadConfig(root, { sets });
-  const workflow = getWorkflow(cfg, values.workflow);
+  let workflow = getWorkflow(cfg, values.workflow);
+  // `yxu run "/add-tests src/a.ts"` runs a custom command from .yxu/commands.
+  if (goal.startsWith("/")) {
+    const [name = "", ...args] = goal.slice(1).split(/\s+/);
+    const { commands, errors } = loadUserCommands(root, cfg);
+    const c = commands.find((x) => x.name === name.toLowerCase());
+    if (!c) die(`no custom command /${name}${errors.length ? `\n${errors.join("\n")}` : ""} (see: yxu commands)`);
+    const x = expandCommand(c, args, cfg);
+    if (x.kind === "shell") {
+      console.log(`$ ${bold(firstLine(x.command, 100))}`);
+      const v = await runVerify(root, x.command, cfg.settings.verify_timeout);
+      if (v.output) console.log(v.output);
+      process.exit(v.ok ? 0 : 2);
+    }
+    goal = x.goal;
+    if (x.workflow) workflow = x.workflow;
+    if (x.kind === "workflow") for (const [k, v] of Object.entries(x.inputs)) inputs[k] ??= v;
+  }
+  if (!goal && workflow.mode !== "pipeline") die('missing goal, e.g. yxu run "add a --verbose flag"');
+  if (Object.keys(inputs).length && workflow.mode !== "pipeline") die(`--input is for pipeline workflows; "${workflow.name}" is ${workflow.mode}`);
 
   const ac = new AbortController();
   process.once("SIGINT", () => {
@@ -209,10 +243,12 @@ async function run(argv: string[]) {
   );
 
   const r = makeRenderer(cfg);
-  const outcome =
+  const session = new Session();
+  const outcome = await withRunHooks(cfg, root, { goal, workflow: workflow.name, session, signal: ac.signal }, () =>
     workflow.mode === "pipeline"
-      ? await runPipeline({ goal, cfg, workflow, root, abort: ac, render: r.render })
-      : await runOrchestrator({ goal, cfg, workflow, root, abort: ac, render: r.render });
+      ? runPipeline({ goal, cfg, workflow, root, abort: ac, render: r.render, inputs, gate: cliGate(values.yes), session })
+      : runOrchestrator({ goal, cfg, workflow, root, abort: ac, render: r.render, session }),
+  );
 
   // The final report is usually the last assistant message, already printed above.
   if (outcome.finalText.trim() !== r.lastText()) console.log(`${bold("─── result ───")}\n${outcome.finalText}\n`);
@@ -223,6 +259,22 @@ async function run(argv: string[]) {
     outcome.session.tips().map((t) => ({ taskId: t.taskId, agent: t.agent, includes: outcome.session.ancestorCount(t.taskId) })),
   );
   process.exit(outcome.ok ? 0 : 2);
+}
+
+/** Gates on the command line: --yes approves, a terminal asks, anything else can't answer. */
+function cliGate(yes?: boolean): ((message: string, stepId: string) => Promise<boolean>) | undefined {
+  if (yes) return async (message) => (console.log(`△ ${message} ${dim("(--yes)")}`), true);
+  if (!process.stdin.isTTY) return undefined;
+  return async (message) => {
+    const { createInterface } = await import("node:readline/promises");
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      const answer = await rl.question(`△ ${bold(message)} [y/N] `);
+      return /^y(es)?$/i.test(answer.trim());
+    } finally {
+      rl.close();
+    }
+  };
 }
 
 function printApplyHints(tips: { taskId: string; agent: string; includes: number }[]) {
@@ -257,7 +309,9 @@ function makeRenderer(cfg: Config) {
     step: ({ id, type, index, total, note }) =>
       type === "fix"
         ? console.log(`  ↻ ${note} ${dim(`(round ${index}/${total})`)}`)
-        : console.log(`\n${bold(`■ [${index}/${total}] ${id}`)} ${dim(type)}`),
+        : note === "skipped"
+          ? console.log(dim(`○ [${index}/${total}] ${id} skipped`))
+          : console.log(`\n${bold(`■ [${index}/${total}] ${id}`)} ${dim(note ? `${type} · ${note}` : type)}`),
     hooks: {
       onDelegateStart: ({ taskId, agent, model, task, buildOn }) =>
         console.log(`▸ ${bold(agent)} ${dim(`${model ?? ""} [${taskId}]${buildOn ? ` on ${buildOn}` : ""}`)}\n  ${firstLine(task)}`),
@@ -284,6 +338,13 @@ function makeRenderer(cfg: Config) {
             : `  ✗ ${v.timedOut ? "timed out" : `failed (exit ${v.exitCode})`}  ${dim(firstLine(v.output.split("\n").at(-1) ?? "", 100))}\n`,
         ),
       onDiscard: (id) => console.log(dim(`  · discarded ${id}`)),
+      onShellStart: ({ command }) => console.log(`$ ${bold(firstLine(command, 100))}`),
+      onShellEnd: ({ result: v, task }) =>
+        console.log(
+          `  ${v.ok ? "✓" : "✗"} ${v.ok ? "ok" : v.timedOut ? "timed out" : `exit ${v.exitCode}`} ${dim(`${(v.durationMs / 1000).toFixed(1)}s`)}` +
+            `${task ? `  changed ${task.filesChanged.join(", ")} ${dim(`[${task.taskId}]`)}` : ""}` +
+            `${!v.ok && v.output ? `\n  ${dim(firstLine(v.output.split("\n").at(-1) ?? "", 100))}` : ""}`,
+        ),
     },
   };
   return { render, subagentCost: () => subagentCost, lastText: () => lastText };
@@ -349,7 +410,7 @@ async function chat(argv: string[]) {
     "claude",
     "--model", values.model ?? cfg.orchestrator.model,
     "--mcp-config", JSON.stringify(mcpConfig),
-    "--append-system-prompt", orchestratorPrompt(workflow) +
+    "--append-system-prompt", orchestratorPrompt(workflow, root) +
       "\n\nThis is an interactive session: confirm the plan with the user before large delegations.\n\n" +
       buildContextPrompt(cfg, root).text,
     "--settings", JSON.stringify(compactSettings(cfg)),
@@ -402,8 +463,9 @@ function show(id: string) {
   if (r.diff) console.log(`\n${r.diff}`);
 }
 
-function apply(id: string) {
-  const r = applyTask(repoRoot(process.cwd()), id);
+async function apply(id: string) {
+  const root = repoRoot(process.cwd());
+  const r = await applyWithHooks(loadConfig(root), root, id);
   if (!r.ok) die(r.message + ("hint" in r && r.hint ? `\n  ${r.hint}` : ""));
   console.log(`✓ ${r.message}`);
 }
@@ -608,7 +670,7 @@ try {
       show(rest[0] ?? die("missing task id"));
       break;
     case "apply":
-      apply(rest[0] ?? die("missing task id"));
+      await apply(rest[0] ?? die("missing task id"));
       break;
     case "discard":
       discard(rest[0] ?? die("missing task id"));
@@ -628,6 +690,29 @@ try {
     case "models":
       await models(rest);
       break;
+    case "commands": {
+      const root = repoRoot(process.cwd());
+      const { commands, errors } = loadUserCommands(root, loadConfig(root));
+      if (!commands.length && !errors.length) console.log("no custom commands; add Markdown files to .yxu/commands/ or ~/.config/yxu/commands/");
+      for (const c of commands) console.log(`/${c.name}${c.args.length ? ` ${commandUsage(c)}` : ""}  ${dim(`${c.description} · ${c.kind} · ${c.scope}`)}`);
+      for (const e of errors) console.log(`✗ ${e}`);
+      process.exit(errors.length ? 1 : 0);
+    }
+    case "keys": {
+      const { buildKeymap, KEY_ACTIONS } = await import("./keymap.ts");
+      const km = buildKeymap(loadConfig(repoRoot(process.cwd())).ui.keys);
+      for (const [a, spec] of Object.entries(km.bindings)) {
+        const def = KEY_ACTIONS[a as keyof typeof KEY_ACTIONS];
+        console.log(`${spec.padEnd(14)} ${a.padEnd(12)} ${dim(def.about)}${spec !== def.key ? `  (default ${def.key})` : ""}`);
+      }
+      for (const w of km.warnings) console.log(`! ${w}`);
+      console.log(dim("\nrebind with ui.keys, e.g.  yxu config set ui.keys.panel ctrl+b --user"));
+      break;
+    }
+    case "prompts": {
+      const { promptsCommand } = await import("./prompts-cli.ts");
+      process.exit(promptsCommand(rest));
+    }
     case "config": {
       const { configCommand } = await import("./config-cli.ts");
       process.exit(await configCommand(rest));

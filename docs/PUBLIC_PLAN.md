@@ -288,6 +288,12 @@ Phases 1–3 deliver most of the value. Packs (4) only make sense once the file 
   - JSON Schema, with a test that the committed copy is up to date
 
   `extends:` moves to Phase 4, where it fits with packs.
+- **Phase 2 (files for everything), in review:**
+  - workflow files with shell, gate, parallel, loop and workflow steps, plus conditions, inputs and outputs
+  - custom commands, prompt overrides, hooks, themes, keys and layout
+
+  It met its exit criterion: a lint → fix → test → gate → PR workflow and `/ship` command, written
+  only as files, ran end to end with a real DeepSeek agent. Panel side (left/right) was not done.
 
 ## 12. Decisions needed from the owner
 

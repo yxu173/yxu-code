@@ -1,5 +1,6 @@
 import { query, type Options, type Query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { claudeExecutable, VERSION } from "../platform.ts";
+import { ORCHESTRATOR_BASE, prompt } from "../prompts.ts";
 import { join } from "node:path";
 import { z } from "zod";
 import type { Config, Workflow } from "../config.ts";
@@ -11,49 +12,9 @@ import { createYxuServer, SERVER_NAME, TOOL_NAMES } from "./tools.ts";
 /** Read-only built-ins so the orchestrator can study the code but never edit it. */
 export const READ_ONLY_TOOLS = ["Read", "Grep", "Glob"];
 
-export function orchestratorPrompt(workflow: Workflow): string {
-  return `
-# You are the yxu orchestrator
-
-You lead a team of local coding subagents. You plan, delegate, and review. You cannot edit
-files yourself; you only have read-only tools plus the yxu tools:
-
-- list_agents: see the available subagents.
-- delegate(agent, task, build_on?): run one task with a subagent in an isolated git worktree.
-- delegate_parallel(tasks): run several independent tasks at once, each in its own worktree.
-- combine(task_ids, resolver?): merge several tasks into one new task (conflicts resolved by an agent).
-- verify(task_id, command?): run the test/check command in a task's worktree.
-- get_diff(task_id, cumulative?): see a task's full diff.
-- discard(task_id): throw away failed, rejected, or superseded work.
-
-## How to work
-1. Read enough of the codebase to plan. Split the goal into small, concrete tasks.
-2. Write every task so it stands alone: the subagent cannot see this conversation. Name the
-   files, the expected behavior, and how to verify it (e.g. which test command to run).
-3. Run independent tasks (different files, no ordering) together with delegate_parallel, then
-   combine the successful ones into a single task. Run dependent tasks with delegate and
-   build_on set to the task they depend on; without build_on a task starts from the user's
-   original HEAD and won't see earlier work. Keep parallel tasks from editing the same files
-   where you can, to avoid conflicts.
-4. Review each diff critically against the goal. If it is wrong or incomplete, delegate a
-   fix with build_on set to that task (say exactly what to change), or discard it and retry,
-   possibly with a stronger agent.
-5. Run verify on the final task. If it fails, delegate a fix (build_on the final task) with the
-   failure output, then verify again.
-6. Subagents can fail (rate limits, auth, timeouts). On an infrastructure failure, switch to
-   another agent instead of retrying the same one.
-
-yxu commits each task's changes to its own branch (yxu/<task_id>) automatically. The user's
-checkout is never touched until they run \`yxu apply\`.
-
-## Rules
-- Never claim the changes are applied. The user reviews and applies them with \`yxu apply\`.
-- Discard work you rejected, so only good work is left pending. After combining, you may
-  discard the parallel parents; the combined task contains their commits.
-- Aim to leave exactly ONE task for the user to apply (combine if needed).
-- Finish with a short report: what was done, verification results, the task_id to apply, and
-  any caveats or follow-ups.
-${workflow.instructions ? `\n## Workflow instructions (from yxu.yaml)\n${workflow.instructions}` : ""}`;
+export function orchestratorPrompt(workflow: Workflow & { name?: string }, root?: string): string {
+  const base = root ? prompt(root, "orchestrator", ORCHESTRATOR_BASE, { workflow }) : ORCHESTRATOR_BASE;
+  return `\n${base.trimEnd()}\n${workflow.instructions ? `\n## Workflow instructions (from yxu.yaml)\n${workflow.instructions}` : ""}`;
 }
 
 export interface RunOutcome {
@@ -67,6 +28,8 @@ export interface RunOutcome {
   /** Claude session id; pass back as `resume` to continue the same conversation. */
   sdkSessionId?: string;
   cancelled?: boolean;
+  /** Pipeline workflows: the values of their declared outputs. */
+  outputs?: Record<string, string>;
   /** Context-window usage at the end of the run, when Claude Code reported it. */
   context?: ContextUsage;
   /** Files from context.include that were (or could not be) added. */
@@ -119,6 +82,8 @@ interface QueryResult {
   costUsd: number;
   sessionId?: string;
   cancelled?: boolean;
+  /** Pipeline workflows: the values of their declared outputs. */
+  outputs?: Record<string, string>;
   context?: ContextUsage;
   compactions: CompactInfo[];
 }
@@ -258,7 +223,7 @@ export async function runOrchestrator(opts: {
       maxBudgetUsd: cfg.orchestrator.max_budget_usd,
       allowedTools: [...READ_ONLY_TOOLS, ...TOOL_NAMES],
       mcpServers: { [SERVER_NAME]: createYxuServer(ops) },
-      systemPrompt: { type: "preset", preset: "claude_code", append: `${orchestratorPrompt(workflow)}\n\n${extra.text}` },
+      systemPrompt: { type: "preset", preset: "claude_code", append: `${orchestratorPrompt(workflow, root)}\n\n${extra.text}` },
       resume: opts.resume,
       includePartialMessages: Boolean(render.textDelta),
     },

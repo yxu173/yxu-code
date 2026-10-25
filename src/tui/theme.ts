@@ -19,7 +19,17 @@ export interface Style {
   inverse?: boolean;
 }
 
-const TRUECOLOR: Record<ColorRole, [number, number, number]> = {
+export type RGB = [number, number, number];
+
+/** A color scheme: exact colors, plus what to use on 256- and 16-color terminals. */
+export interface Palette {
+  name: string;
+  rgb: Record<ColorRole, RGB>;
+  xterm: Record<ColorRole, number>;
+  ansi: Record<ColorRole, number | undefined>;
+}
+
+const TRUECOLOR: Record<ColorRole, RGB> = {
   ivory: [232, 225, 207],
   dim: [150, 145, 132],
   faint: [78, 80, 86],
@@ -131,7 +141,29 @@ export const ASCII_GLYPHS: Glyphs = {
   arrow: "->",
 };
 
+/** The default "ancient instrument" palette. */
+export const INSTRUMENT: Palette = { name: "instrument", rgb: TRUECOLOR, xterm: XTERM256, ansi: ANSI16 };
+
+/** Nearest xterm-256 color for an RGB value (6×6×6 cube or the gray ramp). */
+export function nearest256([r, g, b]: RGB): number {
+  const level = (v: number) => (v < 48 ? 0 : v < 115 ? 1 : Math.min(5, Math.floor((v - 35) / 40)));
+  const steps = [0, 95, 135, 175, 215, 255];
+  const [cr, cg, cb] = [level(r), level(g), level(b)];
+  const cube = 16 + 36 * cr + 6 * cg + cb;
+  const cubeDist = (steps[cr]! - r) ** 2 + (steps[cg]! - g) ** 2 + (steps[cb]! - b) ** 2;
+  const grayIdx = Math.max(0, Math.min(23, Math.round(((r + g + b) / 3 - 8) / 10)));
+  const gv = 8 + grayIdx * 10;
+  const grayDist = (gv - r) ** 2 + (gv - g) ** 2 + (gv - b) ** 2;
+  return grayDist < cubeDist ? 232 + grayIdx : cube;
+}
+
+/** A palette from RGB colors, deriving the 256-color fallbacks. */
+export function paletteFrom(name: string, rgb: Record<ColorRole, RGB>, ansi: Record<ColorRole, number | undefined> = ANSI16): Palette {
+  return { name, rgb, ansi, xterm: Object.fromEntries(Object.entries(rgb).map(([k, v]) => [k, nearest256(v)])) as Record<ColorRole, number> };
+}
+
 export interface Theme {
+  name: string;
   depth: ColorDepth;
   glyphs: Glyphs;
   ascii: boolean;
@@ -144,6 +176,10 @@ export interface Theme {
 }
 
 export interface ThemeOptions {
+  /** Colors (default: the instrument palette). */
+  palette?: Palette;
+  /** Replace individual glyphs (Unicode mode only). */
+  glyphs?: Partial<Glyphs>;
   depth?: ColorDepth;
   ascii?: boolean;
   reducedMotion?: boolean;
@@ -182,20 +218,22 @@ export function createTheme(opts: ThemeOptions = {}): Theme {
   const ascii = opts.ascii ?? detectAscii();
   const paintBackground = (opts.paintBackground ?? process.env.YXU_NO_BG !== "1") && (depth === "truecolor" || depth === "256");
 
+  const pal = opts.palette ?? INSTRUMENT;
   const color = (role: ColorRole, layer: "fg" | "bg"): string => {
     if (depth === "truecolor") {
-      const [r, g, b] = TRUECOLOR[role];
+      const [r, g, b] = pal.rgb[role];
       return `${layer === "fg" ? 38 : 48};2;${r};${g};${b}`;
     }
-    if (depth === "256") return `${layer === "fg" ? 38 : 48};5;${XTERM256[role]}`;
-    if (depth === "16" && layer === "fg") return ANSI16[role] !== undefined ? String(ANSI16[role]) : "";
+    if (depth === "256") return `${layer === "fg" ? 38 : 48};5;${pal.xterm[role]}`;
+    if (depth === "16" && layer === "fg") return pal.ansi[role] !== undefined ? String(pal.ansi[role]) : "";
     return "";
   };
 
   return {
+    name: pal.name,
     depth,
     ascii,
-    glyphs: ascii ? ASCII_GLYPHS : UNICODE_GLYPHS,
+    glyphs: ascii ? ASCII_GLYPHS : { ...UNICODE_GLYPHS, ...opts.glyphs },
     reducedMotion: opts.reducedMotion ?? detectReducedMotion(),
     paintBackground,
     reset: depth === "none" ? "" : "\x1b[0m",

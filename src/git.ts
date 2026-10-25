@@ -1,5 +1,5 @@
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { runSync } from "./platform.ts";
 
 export function git(cwd: string, ...args: string[]): string {
@@ -31,14 +31,21 @@ export function repoRoot(cwd: string): string {
 export const branchFor = (taskId: string) => `yxu/${taskId}`;
 export const worktreeFor = (root: string, taskId: string) => join(root, ".yxu", "worktrees", taskId);
 
-/** Keep .yxu/ out of the user's `git status` without touching their .gitignore. */
+/** yxu's runtime files. The rest of .yxu/ (workflows, commands, prompts) is meant to be committed. */
+export const RUNTIME_PATHS = [".yxu/worktrees/", ".yxu/runs/", ".yxu/sessions/", ".yxu/history.jsonl"];
+
+/** Keep yxu's runtime files out of the user's `git status` without touching their .gitignore. */
 export function excludeYxuDir(root: string) {
   const common = resolve(root, git(root, "rev-parse", "--git-common-dir"));
   const exclude = join(common, "info", "exclude");
   const current = existsSync(exclude) ? readFileSync(exclude, "utf8") : "";
-  if (!current.split("\n").includes(".yxu/")) {
-    appendFileSync(exclude, `${current && !current.endsWith("\n") ? "\n" : ""}.yxu/\n`);
-  }
+  // Older versions excluded all of .yxu/, which hid shared workflows and commands.
+  const lines = current.split("\n").filter((l) => l !== ".yxu/");
+  const missing = RUNTIME_PATHS.filter((p) => !lines.includes(p));
+  if (!missing.length && lines.length === current.split("\n").length) return;
+  const kept = lines.join("\n");
+  mkdirSync(dirname(exclude), { recursive: true });
+  writeFileSync(exclude, `${kept}${kept && !kept.endsWith("\n") ? "\n" : ""}${missing.map((p) => `${p}\n`).join("")}`);
 }
 
 export interface Worktree {

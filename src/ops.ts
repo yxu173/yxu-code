@@ -1,10 +1,13 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { combineTasks } from "./combine.ts";
+import { combineTasks, readTaskRecord } from "./combine.ts";
 import { toProfile, type Config } from "./config.ts";
-import { branchFor, git, removeWorktree, worktreeFor } from "./git.ts";
-import { runTask, Semaphore } from "./runner.ts";
-import type { TaskResult } from "./types.ts";
+import { taskData } from "./actions.ts";
+import { branchFor, collectChanges, createWorktree, git, removeWorktree, worktreeFor, YXU_IDENTITY } from "./git.ts";
+import { formatHookFailure, hooksFor, runHooks } from "./hooks.ts";
+import { newTaskId, runTask, Semaphore, writeTaskRecord } from "./runner.ts";
+import { prompt, SUBAGENT_PREAMBLE } from "./prompts.ts";
+import { emptyUsage, type TaskResult } from "./types.ts";
 import { formatVerify, runVerify, type VerifyResult } from "./verify.ts";
 
 export interface OpsHooks {
@@ -15,6 +18,8 @@ export interface OpsHooks {
   onCombineEnd?: (result: TaskResult) => void;
   onVerifyStart?: (command: string, taskId?: string) => void;
   onVerifyEnd?: (result: VerifyResult, taskId?: string) => void;
+  onShellStart?: (info: { id: string; command: string; buildOn?: string }) => void;
+  onShellEnd?: (info: { id: string; result: VerifyResult; task?: TaskResult }) => void;
   onDiscard?: (taskId: string) => void;
 }
 
@@ -55,14 +60,7 @@ export class Session {
   }
 }
 
-export const SUBAGENT_PREAMBLE = `You are a coding subagent. Complete exactly the task below in the current directory.
-- Make the code changes directly. Do not commit; changes are collected automatically.
-- Do not ask questions; make reasonable assumptions and state them.
-- Stay within the scope of the task; other agents may be editing other parts of the code in parallel.
-- Finish with a short summary: what you changed, any assumptions, and anything left undone.
-
-TASK:
-`;
+export { SUBAGENT_PREAMBLE } from "./prompts.ts";
 
 function truncate(diff: string, max: number): string {
   if (diff.length <= max) return diff;
@@ -109,18 +107,35 @@ export class TaskOps {
       const result = await runTask({
         agentName: agent,
         profile,
-        prompt: SUBAGENT_PREAMBLE + task,
+        prompt: prompt(this.root, "subagent-preamble", SUBAGENT_PREAMBLE) + task,
         title: task,
         cwd: this.root,
         baseRef: base.baseRef,
         signal: this.opts.signal,
         onStart: (taskId) => this.hooks.onDelegateStart?.({ taskId, agent, model: profile.model, task, buildOn }),
       });
+      if (result.branch && hooksFor(this.cfg, "after_task").length) await this.afterTask(result);
       this.session.tasks.set(result.taskId, { ...result, prompt: task, parents: buildOn ? [buildOn] : [] });
       this.hooks.onDelegateEnd?.(result);
       this.opts.onChange?.();
       return result;
     });
+  }
+
+  /** after_task hooks run in the task's worktree; what they change is committed to the task. */
+  private async afterTask(r: TaskResult) {
+    const wt = worktreeFor(this.root, r.taskId);
+    const h = await runHooks(this.cfg, "after_task", { task: taskData(r) }, { cwd: wt, signal: this.opts.signal });
+    if (h.runs.length && git(wt, "status", "--porcelain")) {
+      git(wt, "add", "-A");
+      git(wt, ...YXU_IDENTITY, "commit", "-q", "--no-verify", "-m", "yxu(after_task hooks)");
+      // The task is its agent's commit plus this one.
+      r.diff = git(wt, "diff", "HEAD~2", "HEAD");
+      r.filesChanged = git(wt, "diff", "--name-only", "HEAD~2", "HEAD").split("\n").filter(Boolean);
+      const rec = readTaskRecord(this.root, r.taskId);
+      if (rec) writeTaskRecord(this.root, { ...rec, diff: r.diff, filesChanged: r.filesChanged });
+    }
+    for (const f of h.failed) r.summary = `${r.summary}\n\n[warning] ${formatHookFailure("after_task", f)}`;
   }
 
   /** Run tasks concurrently (bounded by the semaphore). Validates all before starting any. */
@@ -170,6 +185,52 @@ export class TaskOps {
     const result = await runVerify(cwd, cmd, this.cfg.settings.verify_timeout, this.opts.signal);
     this.hooks.onVerifyEnd?.(result, taskId);
     return result;
+  }
+
+  /**
+   * Run a workflow shell step in a fresh worktree on top of `buildOn` (or HEAD), never in the
+   * user's checkout. Files it changes become a task, like an agent's work.
+   */
+  async shell(
+    id: string,
+    command: string,
+    buildOn?: string,
+    opts: { timeoutMs?: number; env?: Record<string, string> } = {},
+  ): Promise<{ result: VerifyResult; task?: TaskResult }> {
+    const prev = buildOn ? this.session.tasks.get(buildOn) : undefined;
+    if (buildOn && !prev) throw new Error(`Unknown task_id "${buildOn}".`);
+    const taskId = newTaskId();
+    const wt = createWorktree(this.root, taskId, prev?.branch);
+    this.hooks.onShellStart?.({ id, command, buildOn });
+    let result: VerifyResult;
+    let task: TaskResult | undefined;
+    try {
+      result = await runVerify(wt.path, command, opts.timeoutMs ?? this.cfg.settings.verify_timeout, this.opts.signal, opts.env);
+      const changes = collectChanges(wt, `yxu(shell ${id}): ${command.split("\n")[0]!.slice(0, 60)}`);
+      if (changes.files.length) {
+        task = {
+          taskId,
+          agent: "shell",
+          ok: result.ok,
+          summary: `\`${command}\` changed ${changes.files.length} file(s)`,
+          error: result.ok ? undefined : `exit ${result.exitCode}`,
+          usage: emptyUsage(),
+          exitCode: result.exitCode,
+          durationMs: result.durationMs,
+          diff: changes.diff,
+          filesChanged: changes.files,
+          branch: wt.branch,
+          worktree: wt.path,
+        };
+        this.session.tasks.set(taskId, { ...task, prompt: command, parents: buildOn ? [buildOn] : [] });
+        writeTaskRecord(this.root, task, { prompt: command, baseRef: prev?.branch });
+      }
+    } finally {
+      if (!task) removeWorktree(this.root, taskId, true);
+    }
+    this.hooks.onShellEnd?.({ id, result, task });
+    this.opts.onChange?.();
+    return { result, task };
   }
 
   discard(taskId: string) {

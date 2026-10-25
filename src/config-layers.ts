@@ -11,7 +11,7 @@
  * A value of `null` removes what lower layers set (e.g. `agents: { heavy-coder: null }`).
  * An agent whose `cli` changes is replaced as a whole, so options for the old CLI don't leak.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -35,8 +35,13 @@ export interface LayerInfo {
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
 
+/** ~/.config/yxu (or $XDG_CONFIG_HOME/yxu): personal config, workflows, commands, prompts, themes. */
+export function userConfigDir(env: NodeJS.ProcessEnv = process.env): string {
+  return join(env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "yxu");
+}
+
 export function userConfigPath(env: NodeJS.ProcessEnv = process.env): string {
-  return join(env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "yxu", "config.yaml");
+  return join(userConfigDir(env), "config.yaml");
 }
 
 /** Where each file layer lives for a repo (yxu.yml is accepted for the project file). */
@@ -161,6 +166,22 @@ export interface Loaded {
   layers: LayerInfo[];
   /** Merged raw values (before schema defaults), for `config explain`. */
   raw: Obj;
+  /** Workflows that came from their own file: name → file. */
+  workflowFiles: Record<string, string>;
+}
+
+/** `<dir>/<name>.yaml` files, each holding one workflow. */
+export function readWorkflowDir(dir: string): Record<string, { file: string; data: Obj }> {
+  const out: Record<string, { file: string; data: Obj }> = {};
+  if (!existsSync(dir)) return out;
+  for (const entry of readdirSync(dir).sort()) {
+    const m = /^([\w-]+)\.ya?ml$/.exec(entry);
+    if (!m) continue;
+    const file = join(dir, entry);
+    if (out[m[1]!]) throw new Error(`workflow "${m[1]}" has two files in ${dir}`);
+    out[m[1]!] = { file, data: readLayerText(readFileSync(file, "utf8"), file).data };
+  }
+  return out;
 }
 
 export function loadLayers(root: string, opts: LoadOptions = {}): Loaded {
@@ -176,6 +197,20 @@ export function loadLayers(root: string, opts: LoadOptions = {}): Loaded {
     }
     const { data, version } = readLayerText(text, file);
     layers.push({ name, file, exists: true, version, data });
+  }
+  // Workflow files join their layer: ~/.config/yxu/workflows (user), .yxu/workflows (project).
+  const workflowFiles: Record<string, string> = {};
+  for (const [layerName, dir] of [["user", join(userConfigDir(env), "workflows")], ["project", join(root, ".yxu", "workflows")]] as const) {
+    const found = readWorkflowDir(dir);
+    if (!Object.keys(found).length) continue;
+    const layer = layers.find((l) => l.name === layerName)!;
+    const inline = isObj(layer.data.workflows) ? layer.data.workflows : {};
+    for (const [wf, { file, data }] of Object.entries(found)) {
+      if (wf in inline) throw new Error(`workflow "${wf}" is defined in both ${display(layer.file!, root)} and ${display(file, root)}`);
+      inline[wf] = data;
+      workflowFiles[wf] = display(file, root);
+    }
+    layer.data.workflows = inline;
   }
   // Until some file defines agents, the starter agents and workflows apply.
   const starter = !layers.some((l) => isObj(l.data.agents));
@@ -200,9 +235,12 @@ export function loadLayers(root: string, opts: LoadOptions = {}): Loaded {
       path.split(".").map((_, i, a) => a.slice(0, a.length - i).join(".")).find((p) => origins[p]);
     return hit ? fileOf(origins[hit] as string) : source;
   };
-  const config = validateConfig(raw, source, where);
+  const config = validateConfig(raw, source, (path) => {
+    const wf = /^workflows\.([^.]+)/.exec(path)?.[1];
+    return wf && workflowFiles[wf] ? workflowFiles[wf] : where(path);
+  });
   config.origins = origins as Record<string, string>;
-  return { config, layers, raw };
+  return { config, layers, raw, workflowFiles };
 }
 
 /** Paths under the repo are shown relative to it, the home directory as ~. */
@@ -220,6 +258,8 @@ export function originOf(loaded: Loaded, key: string, root: string): { layer: La
   let layer: string | undefined;
   for (let i = parts.length; i > 0 && !layer; i--) layer = origins[parts.slice(0, i).join(".")];
   if (!layer) return { layer: "defaults" };
+  const wf = /^workflows\.([^.]+)/.exec(key)?.[1];
+  if (wf && loaded.workflowFiles[wf]) return { layer: layer as LayerName, file: loaded.workflowFiles[wf] };
   const l = loaded.layers.find((x) => x.name === layer);
   return { layer: layer as LayerName, file: l?.file ? display(l.file, root) : undefined };
 }
