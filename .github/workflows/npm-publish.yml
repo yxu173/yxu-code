@@ -1,0 +1,46 @@
+name: npm publish
+
+# Publish the npm packages of a finished release run again (for example when its npm job failed).
+# Actions → npm publish → Run workflow, with the release run's id (the number in its URL).
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "id of the release workflow run whose npm packages to publish"
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      HAVE_NPM_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
+    steps:
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v5
+        with:
+          name: npm
+          path: npm
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: publish
+        run: |
+          if [ "$HAVE_NPM_TOKEN" != true ]; then echo "NPM_TOKEN is not set"; exit 1; fi
+          version=$(node -p 'require("./npm/yxu/package.json").version')
+          tag=latest
+          case "$version" in *-*) tag=next ;; esac
+          # Platform packages first, so the wrapper's optional dependencies resolve; skip what's already up.
+          for dir in ./npm/yxu-* ./npm/yxu; do
+            name=$(node -p "require('$dir/package.json').name")
+            if npm view "$name@$version" version >/dev/null 2>&1; then echo "✓ $name@$version already published"; continue; fi
+            chmod +x "$dir"/bin/*
+            npm publish "$dir" --access public --provenance --tag "$tag"
+          done
