@@ -1,6 +1,7 @@
 /**
  * Every built-in prompt, by name, and per-project overrides:
  *   ~/.config/yxu/prompts/<name>.md   then   <repo>/.yxu/prompts/<name>.md
+ * Packs' prompts/<name>.md apply just before the file next to them (user packs, project packs).
  * An override appends to the prompt (default) or replaces it (`mode: replace` in front matter).
  * Overrides are templates: {{workflow.instructions}}, {{max_tasks}}, {{conflicts}}, … (see PROMPTS).
  */
@@ -9,6 +10,7 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { userConfigDir } from "./config-layers.ts";
 import { render } from "./expr.ts";
+import { packContentDirs } from "./packs.ts";
 
 export const PROMPT_NAMES = ["orchestrator", "planner", "reviewer", "subagent-preamble", "conflict-resolver"] as const;
 export type PromptName = (typeof PROMPT_NAMES)[number];
@@ -83,10 +85,7 @@ export const SUBAGENT_PREAMBLE = `You are a coding subagent. Complete exactly th
 - Make the code changes directly. Do not commit; changes are collected automatically.
 - Do not ask questions; make reasonable assumptions and state them.
 - Stay within the scope of the task; other agents may be editing other parts of the code in parallel.
-- Finish with a short summary: what you changed, any assumptions, and anything left undone.
-
-TASK:
-`;
+- Finish with a short summary: what you changed, any assumptions, and anything left undone.`;
 
 export const resolverBase = (intents: string, conflicts: string) => `You are resolving a git merge conflict in the current directory. Several tasks changed the same code in parallel:
 ${intents}
@@ -101,10 +100,16 @@ export interface PromptOverride {
   body: string;
 }
 
-/** Override files for a prompt, user first then project (both apply, in that order). */
+/** Override files for a prompt: user packs, user, project packs, project (all apply, in that order). */
 export function promptOverrides(root: string, name: PromptName): PromptOverride[] {
   const out: PromptOverride[] = [];
-  for (const dir of [join(userConfigDir(), "prompts"), join(root, ".yxu", "prompts")]) {
+  const dirs = [
+    ...packContentDirs(root, "prompts", "user").map((d) => d.dir),
+    join(userConfigDir(), "prompts"),
+    ...packContentDirs(root, "prompts", "project").map((d) => d.dir),
+    join(root, ".yxu", "prompts"),
+  ];
+  for (const dir of dirs) {
     const file = join(dir, `${name}.md`);
     if (!existsSync(file)) continue;
     const { meta, body } = frontMatter(readFileSync(file, "utf8"));

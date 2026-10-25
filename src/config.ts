@@ -234,6 +234,10 @@ const CompactSchema = z
 export const CONFIG_VERSION = 1;
 
 export const ConfigSchema = z.object({
+  extends: z
+    .union([z.string(), z.array(z.string())])
+    .optional()
+    .describe("Shared bases merged under this file: ./base.yaml, github:owner/repo/path.yaml[@ref] (pinned in yxu.lock)"),
   orchestrator: z
     .object({
       model: z.string().default("opus").describe("Claude model that plans, delegates and reviews"),
@@ -253,6 +257,10 @@ export const ConfigSchema = z.object({
       concurrency: z.number().int().min(1).max(16).default(3),
       /** Default agent for resolving merge conflicts in `combine`. */
       resolver: z.string().optional(),
+      default_agent: z
+        .string()
+        .optional()
+        .describe('The agent a workflow step means by `agent: default` (packs use this); default: the first agent'),
       /** Command that checks a task's result, e.g. "npm test". Used by verify steps and the verify tool. */
       verify: z.string().optional(),
       verify_timeout: Duration.default(600_000), // zod 4: defaults bypass the transform, so this is already ms
@@ -437,6 +445,21 @@ export function validateConfig(raw: unknown, source: string, where: (path: strin
         throw abad(`${what}: ${(e as Error).message}`);
       }
     }
+  }
+  if (cfg.settings.default_agent && !cfg.agents[cfg.settings.default_agent]) {
+    throw bad("settings.default_agent", `settings.default_agent "${cfg.settings.default_agent}" is not an agent`);
+  }
+  // `agent: default` in a step (used by shared packs) means settings.default_agent or the first agent.
+  const fallback = cfg.settings.default_agent ?? Object.keys(cfg.agents)[0];
+  if (!cfg.agents.default && fallback) {
+    const point = (steps: Step[] = []) => {
+      for (const st of steps) {
+        if (st.type === "delegate" && st.agent === "default") st.agent = fallback;
+        if ((st.type === "verify" || st.type === "review") && st.fix_agent === "default") st.fix_agent = fallback;
+        if (st.type === "parallel" || st.type === "loop") point(st.steps);
+      }
+    };
+    for (const wf of Object.values(cfg.workflows)) point(wf.steps);
   }
   if (cfg.settings.resolver && !cfg.agents[cfg.settings.resolver]) {
     throw bad("settings.resolver", `settings.resolver "${cfg.settings.resolver}" is not an agent`);

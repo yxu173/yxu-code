@@ -4,6 +4,20 @@
   "title": "yxu configuration (yxu.yaml, yxu.local.yaml, ~/.config/yxu/config.yaml)",
   "type": "object",
   "properties": {
+    "extends": {
+      "description": "Shared bases merged under this file: ./base.yaml, github:owner/repo/path.yaml[@ref] (pinned in yxu.lock)",
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
     "orchestrator": {
       "default": {
         "model": "opus",
@@ -294,6 +308,10 @@
           "maximum": 16
         },
         "resolver": {
+          "type": "string"
+        },
+        "default_agent": {
+          "description": "The agent a workflow step means by `agent: default` (packs use this); default: the first agent",
           "type": "string"
         },
         "verify": {

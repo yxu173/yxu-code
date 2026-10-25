@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { applyTask, applyWithHooks, diffStat, discardTask, type ActionResult } from "../actions.ts";
 import { hooksFor, withRunHooks } from "../hooks.ts";
 import { describe, type Answer, type PermissionRequest } from "../permissions.ts";
+import { packStatus, type PackStatus } from "../pack-install.ts";
+import { packContents } from "../packs.ts";
 import { needsTrust, setTrust } from "../trust.ts";
 import { readTaskRecord } from "../combine.ts";
 import { getWorkflow, type Config, type Workflow } from "../config.ts";
@@ -24,7 +26,7 @@ import { KeyParser, type Key } from "./keys.ts";
 import { Store, type ContextInfo, type Entry, type TaskView } from "./model.ts";
 import { recoveryHint } from "./recovery.ts";
 import { createTheme, type Glyphs, type Palette, type Theme } from "./theme.ts";
-import { BUILTIN_THEMES, loadTheme, themeFiles, themesDir } from "./themes.ts";
+import { BUILTIN_THEMES, loadTheme, themeFileMap } from "./themes.ts";
 import { buildKeymap, KEY_ACTIONS, translateKey, type KeyAction, type Keymap } from "../keymap.ts";
 import { catalogKey, keyLabel, ModelCatalog } from "../models.ts";
 import type { CliName } from "../types.ts";
@@ -621,7 +623,7 @@ export class App {
   explainConfig(key?: string) {
     try {
       const loaded = loadLayers(this.o.root, { sets: this.o.sets });
-      const files = loaded.layers.filter((l) => l.file).map((l) => `- ${l.name}: ${display(l.file!, this.o.root)}${l.exists ? "" : " (none)"}`);
+      const files = loaded.layers.filter((l) => l.file).map((l) => `- ${l.pack ? `pack ${l.pack}` : l.name}: ${display(l.file!, this.o.root)}${l.exists ? "" : " (none)"}`);
       const rows = explainRows(loaded, this.o.root, key);
       if (key && !rows.length) return this.fail(`no setting "${key}"`, "try /config with no key to list everything");
       const unsaved = this.dirty.size ? [`*${this.dirty.size} unsaved session change${this.dirty.size === 1 ? "" : "s"} (not shown) — /save [user|project|local]*`] : [];
@@ -648,7 +650,7 @@ export class App {
   /** `/theme <name>`: switch colors now (and /save keeps it in ui.theme). */
   switchTheme(name: string, quiet = false) {
     try {
-      const t = loadTheme(name);
+      const t = loadTheme(name, this.o.root);
       this.themeLook = { palette: t.palette, glyphs: t.glyphs };
     } catch (e) {
       return this.fail((e as Error).message, "type /theme to list themes");
@@ -660,12 +662,12 @@ export class App {
   }
 
   listThemes() {
-    const files = themeFiles();
+    const files = themeFileMap(this.o.root);
     this.note(
       [
         `**Themes** (current: ${this.theme.name})`,
         ...Object.entries(BUILTIN_THEMES).map(([n, t]) => `- \`${n}\` — ${t.about}`),
-        ...files.map((n) => `- \`${n}\` — ${display(join(themesDir(), n), this.o.root)}.yaml`),
+        ...[...files].map(([n, f]) => `- \`${n}\` — ${display(f, this.o.root)}`),
         "",
         "Make your own: ~/.config/yxu/themes/<name>.yaml with `extends:` and `colors:` (#rrggbb per role).",
       ].join("\n"),
@@ -1002,6 +1004,29 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
 
   /** Custom commands from .yxu/commands and ~/.config/yxu/commands. */
   userCommands: UserCommand[] = [];
+
+  /** `/packs`: installed packs, their state against yxu.lock, and what each adds. */
+  listPacks() {
+    let rows: PackStatus[];
+    try {
+      rows = packStatus(this.o.root);
+    } catch (e) {
+      return this.fail((e as Error).message);
+    }
+    if (!rows.length) {
+      return this.note("No packs installed. In a shell: `yxu add python` (or node, rust, go), `yxu add github:owner/repo`, or `yxu add ./folder`.", "info");
+    }
+    const lines = rows.map((r) => {
+      const state = { ok: "", modified: " — **differs from yxu.lock**", missing: " — **missing**: run `yxu packs install`", unlocked: " — not in yxu.lock" }[r.state];
+      const head = `- **${r.name}** ${r.version ?? ""} · ${r.scope} · ${r.source ?? "?"}${r.commit ? ` @ ${r.commit.slice(0, 10)}` : ""}${state}`;
+      if (!r.pack) return head;
+      const c = packContents(r.pack);
+      const parts = [c.workflows.length && `workflows ${c.workflows.join(", ")}`, c.commands.length && `commands ${c.commands.join(" ")}`, c.prompts.length && `prompts ${c.prompts.join(", ")}`, c.themes.length && `themes ${c.themes.join(", ")}`].filter(Boolean);
+      return parts.length ? `${head}
+  ${parts.join(" · ")}` : head;
+    });
+    this.note(["**Packs**", ...lines, "", "Manage them in a shell: `yxu packs update`, `yxu packs remove <name>`."].join("\n"));
+  }
 
   reloadUserCommands(report = false) {
     let errors: string[] = [];

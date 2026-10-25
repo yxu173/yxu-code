@@ -1,6 +1,7 @@
 /** `yxu config …`: inspect and edit the configuration layers. */
 import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
+import { dirname } from "node:path";
 import { parseDocument, stringify } from "yaml";
 import { CONFIG_VERSION } from "./config.ts";
 import { migrateText, saveConfigPatch } from "./config-edit.ts";
@@ -73,10 +74,11 @@ export async function configCommand(argv: string[]): Promise<number> {
       if (!key) {
         console.log("layers (later wins):");
         for (const l of loaded.layers) {
-          const what = l.file ? display(l.file, root) : l.name === "defaults" ? "built-in" : l.name === "env" ? "YXU_* variables" : "--set";
-          const state = l.file ? (l.exists ? (l.version === undefined ? "  (no version: run `yxu config migrate`)" : "") : "  (none)") : "";
+          const what = l.pack ? display(dirname(l.file!), root) : l.file ? display(l.file, root) : l.name === "defaults" ? "built-in" : l.name === "env" ? "YXU_* variables" : "--set";
+          const state = l.file && !l.pack ? (l.exists ? (l.version === undefined ? "  (no version: run `yxu config migrate`)" : "") : "  (none)") : "";
           const n = Object.keys(l.data).length;
-          console.log(`  ${l.name.padEnd(9)} ${what}${state}${!l.file && l.name !== "defaults" ? dim(n ? `  ${n} section(s)` : "  (none)") : ""}`);
+          const label = l.pack ? `${l.name === "packs" ? "pack" : "user pack"} ${l.pack}` : l.name;
+          console.log(`  ${label.padEnd(9)} ${what}${state}${!l.file && l.name !== "defaults" ? dim(n ? `  ${n} section(s)` : "  (none)") : ""}`);
         }
         console.log("");
       }
@@ -108,7 +110,7 @@ export async function configCommand(argv: string[]): Promise<number> {
     }
     case "paths": {
       const loaded = loadLayers(root);
-      for (const l of loaded.layers.filter((x) => x.file)) {
+      for (const l of loaded.layers.filter((x) => x.file && !x.pack)) {
         console.log(`${l.name.padEnd(8)} ${l.file}${l.exists ? `  (version ${l.version ?? "not set"})` : "  (not created)"}`);
       }
       return 0;
@@ -116,7 +118,7 @@ export async function configCommand(argv: string[]): Promise<number> {
     case "migrate": {
       let pending = 0;
       for (const l of loadLayers(root).layers) {
-        if (!l.file || !l.exists) continue;
+        if (!l.file || !l.exists || l.pack) continue;
         const m = migrateText(readFileSync(l.file, "utf8"));
         if (m.before === m.after) {
           console.log(`✓ ${display(l.file, root)} is at version ${m.to}`);

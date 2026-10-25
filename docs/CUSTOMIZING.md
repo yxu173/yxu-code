@@ -12,6 +12,9 @@ combine.
 | slash commands | `.yxu/commands/<name>.md` | `~/.config/yxu/commands/<name>.md` |
 | prompt overrides | `.yxu/prompts/<name>.md` | `~/.config/yxu/prompts/<name>.md` |
 | themes | | `~/.config/yxu/themes/<name>.yaml` |
+| all of the above, bundled | a pack in `.yxu/packs/<name>/` (`yxu add`) | `~/.config/yxu/packs/<name>/` (`yxu add --user`) |
+
+To share a setup across repos or teams, put it in a pack: see [PACKS.md](PACKS.md).
 
 yxu only keeps its runtime files out of git (`.yxu/worktrees/`, `runs/`, `sessions/`,
 `history.jsonl`), so the rest of `.yxu/` can be committed.

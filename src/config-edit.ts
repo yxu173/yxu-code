@@ -22,7 +22,7 @@ export function saveConfigPatch(root: string, patch: ConfigPatch, layer: FileLay
   const file = layerPaths(root)[layer];
   let text: string;
   if (existsSync(file)) text = readFileSync(file, "utf8");
-  else if (layer === "project" && !loadLayers(root).layers.some((l) => l.name !== "defaults" && l.data.agents)) text = DEFAULT_YAML;
+  else if (layer === "project" && !loadLayers(root).layers.some((l) => l.name !== "defaults" && !l.pack && l.data.agents)) text = DEFAULT_YAML;
   else text = newLayerText(layer);
   const doc = parseDocument(text);
   for (const { path, value } of patch) {

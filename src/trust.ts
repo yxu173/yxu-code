@@ -48,7 +48,8 @@ export function trustedRepos(): string[] {
 
 export class TrustError extends Error {}
 
-const REPO_LAYERS = new Set(["project", "local"]);
+const REPO_LAYERS = new Set(["packs", "project", "local"]);
+const fromRepoLayer = (origin: string) => REPO_LAYERS.has(origin.split(":")[0]!);
 
 /** True when `key` (or the closest parent that has an origin) came from the repo's own files. */
 function fromRepo(cfg: Config, k: string): boolean {
@@ -57,10 +58,10 @@ function fromRepo(cfg: Config, k: string): boolean {
   const parts = k.split(".");
   for (let i = parts.length; i > 0; i--) {
     const o = origins[parts.slice(0, i).join(".")];
-    if (o) return REPO_LAYERS.has(o);
+    if (o) return fromRepoLayer(o);
   }
   // A section: is anything under it from the repo?
-  return Object.entries(origins).some(([ok, layer]) => ok.startsWith(`${k}.`) && REPO_LAYERS.has(layer));
+  return Object.entries(origins).some(([ok, layer]) => ok.startsWith(`${k}.`) && fromRepoLayer(layer));
 }
 
 /** Throw unless the repo is trusted or `key` didn't come from the repo's own config. */

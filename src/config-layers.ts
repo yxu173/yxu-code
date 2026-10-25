@@ -2,7 +2,9 @@
  * Configuration layers, merged in order (later wins; maps merge deeply, lists replace):
  *
  *   defaults   built-in schema defaults (+ the starter agents/workflows while no file defines agents)
+ *   user-packs ~/.config/yxu/packs/<name>/      packs you installed with `yxu add --user`
  *   user       ~/.config/yxu/config.yaml        personal, every repo
+ *   packs      <repo>/.yxu/packs/<name>/        packs installed in the repo with `yxu add`
  *   project    <repo>/yxu.yaml                  team, committed
  *   local      <repo>/yxu.local.yaml            personal for this repo, git-ignored
  *   env        YXU_ORCHESTRATOR_MODEL=sonnet …  (orchestrator/settings/context/compact keys)
@@ -10,15 +12,22 @@
  *
  * A value of `null` removes what lower layers set (e.g. `agents: { heavy-coder: null }`).
  * An agent whose `cli` changes is replaced as a whole, so options for the old CLI don't leak.
+ * A file may start from shared bases: `extends: [./base.yaml, github:acme/presets/python.yaml]`;
+ * the file's own values win over its bases. Remote bases are pinned in yxu.lock.
+ *
+ * Origins record the layer that set each value; pack layers record "packs:<name>".
  */
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { CONFIG_VERSION, DEFAULT_YAML, validateConfig, type Config } from "./config.ts";
+import { installedPacks, lockPath, MANIFEST, packData, readLock, writeLock, type PackScope } from "./packs.ts";
+import { cacheDir, fetchSource, integrity, parseSource } from "./sources.ts";
 import { isTrusted } from "./trust.ts";
 
-export const LAYERS = ["defaults", "user", "project", "local", "env", "flags"] as const;
+export const LAYERS = ["defaults", "user-packs", "user", "packs", "project", "local", "env", "flags"] as const;
 export type LayerName = (typeof LAYERS)[number];
 export const FILE_LAYERS = ["user", "project", "local"] as const;
 export type FileLayer = (typeof FILE_LAYERS)[number];
@@ -31,7 +40,12 @@ export interface LayerInfo {
   /** `version:` written in the file (undefined: not set). */
   version?: number;
   data: Record<string, unknown>;
+  /** Pack layers: the pack's name (its origin is "<layer>:<pack>"). */
+  pack?: string;
 }
+
+/** "packs:python" → "packs". */
+export const baseLayer = (origin: string): LayerName => origin.split(":")[0] as LayerName;
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -123,7 +137,7 @@ function setPath(obj: Obj, path: string[], value: unknown) {
 }
 
 /** Merge `over` into `base` in place, recording which layer set each leaf. */
-function merge(base: Obj, over: Obj, layer: LayerName, origins: Obj, prefix: string[] = []) {
+function merge(base: Obj, over: Obj, layer: string, origins: Obj, prefix: string[] = []) {
   for (const [k, v] of Object.entries(over)) {
     const path = [...prefix, k];
     const key = path.join(".");
@@ -147,7 +161,7 @@ function merge(base: Obj, over: Obj, layer: LayerName, origins: Obj, prefix: str
   }
 }
 
-function markLeaves(v: unknown, key: string, layer: LayerName, origins: Obj) {
+function markLeaves(v: unknown, key: string, layer: string, origins: Obj) {
   if (isObj(v) && Object.keys(v).length) {
     for (const [k, child] of Object.entries(v)) markLeaves(child, `${key}.${k}`, layer, origins);
   } else {
@@ -197,7 +211,8 @@ export function loadLayers(root: string, opts: LoadOptions = {}): Loaded {
       continue;
     }
     const { data, version } = readLayerText(text, file);
-    layers.push({ name, file, exists: true, version, data });
+    const lock = lockPath(name === "user" ? "user" : "project", root);
+    layers.push({ name, file, exists: true, version, data: withExtends(data, file, lock, env, [file]) });
   }
   // Workflow files join their layer: ~/.config/yxu/workflows (user), .yxu/workflows (project).
   const workflowFiles: Record<string, string> = {};
@@ -216,18 +231,28 @@ export function loadLayers(root: string, opts: LoadOptions = {}): Loaded {
   // Until some file defines agents, the starter agents and workflows apply.
   const starter = !layers.some((l) => isObj(l.data.agents));
   const defaults: Obj = starter ? readLayerText(DEFAULT_YAML, "(built-in defaults)").data : {};
+  // Packs sit just below the file next to them: user packs → user, project packs → project.
+  for (const [scope, layerName, before] of [["project", "packs", "project"], ["user", "user-packs", "user"]] as const) {
+    const at = layers.findIndex((l) => l.name === before);
+    const packs = installedPacks(scope as PackScope, root).map(
+      (p): LayerInfo => ({ name: layerName, pack: p.name, file: join(p.dir, MANIFEST), exists: true, data: packData(p) }),
+    );
+    layers.splice(at, 0, ...packs);
+  }
   layers.unshift({ name: "defaults", exists: true, data: defaults });
   layers.push({ name: "env", exists: true, data: envLayer(env) });
   layers.push({ name: "flags", exists: true, data: setsLayer(opts.sets ?? []) });
 
   const raw: Obj = {};
   const origins: Obj = {};
-  for (const l of layers) merge(raw, l.data, l.name, origins);
+  for (const l of layers) merge(raw, l.data, l.pack ? `${l.name}:${l.pack}` : l.name, origins);
 
-  const files = layers.filter((l) => l.exists && l.file).map((l) => display(l.file!, root));
+  const files = layers.filter((l) => l.exists && l.file && !l.pack).map((l) => display(l.file!, root));
+  const packNames = layers.filter((l) => l.pack).map((l) => l.pack!);
+  if (packNames.length) files.push(`packs: ${packNames.join(", ")}`);
   const source = files.length ? files.join(" + ") : "(built-in defaults)";
   const fileOf = (layer: string) => {
-    const l = layers.find((x) => x.name === layer);
+    const l = layers.find((x) => (x.pack ? `${x.name}:${x.pack}` : x.name) === layer);
     return l?.file ? display(l.file, root) : layer === "env" ? "environment (YXU_*)" : layer === "flags" ? "command-line flags" : "built-in defaults";
   };
   const where = (path: string) => {
@@ -261,7 +286,91 @@ export function originOf(loaded: Loaded, key: string, root: string): { layer: La
   for (let i = parts.length; i > 0 && !layer; i--) layer = origins[parts.slice(0, i).join(".")];
   if (!layer) return { layer: "defaults" };
   const wf = /^workflows\.([^.]+)/.exec(key)?.[1];
-  if (wf && loaded.workflowFiles[wf]) return { layer: layer as LayerName, file: loaded.workflowFiles[wf] };
-  const l = loaded.layers.find((x) => x.name === layer);
-  return { layer: layer as LayerName, file: l?.file ? display(l.file, root) : undefined };
+  if (wf && loaded.workflowFiles[wf]) return { layer: baseLayer(layer), file: loaded.workflowFiles[wf] };
+  const l = loaded.layers.find((x) => (x.pack ? `${x.name}:${x.pack}` : x.name) === layer);
+  const file = l?.file ? display(l.pack ? dirname(l.file) : l.file, root) : undefined;
+  return { layer: baseLayer(layer), file: l?.pack ? `pack ${l.pack} (${file})` : file };
+}
+
+/**
+ * Resolve a file's `extends:` list: each base (and its own bases) is merged first, then the
+ * file's values on top. Local paths are relative to the file; remote files are fetched once,
+ * cached in ~/.cache/yxu/extends and pinned (commit + hash) in the scope's yxu.lock.
+ */
+function withExtends(data: Obj, file: string, lock: string, env: NodeJS.ProcessEnv, stack: string[]): Obj {
+  const ext = data.extends;
+  delete data.extends;
+  if (ext === undefined || ext === null) return data;
+  const list = typeof ext === "string" ? [ext] : ext;
+  if (!Array.isArray(list) || list.some((x) => typeof x !== "string")) throw new Error(`invalid config ${file}: extends must be a file or a list of files`);
+  if (stack.length > 6) throw new Error(`extends nests too deeply: ${stack.join(" → ")}`);
+  const remoteParent = stack.length > 1 && !existsSync(file);
+  const base: Obj = {};
+  for (const spec of list as string[]) {
+    const src = parseSource(spec, dirname(file));
+    let text: string;
+    let label: string;
+    if (src.kind === "builtin") throw new Error(`${file}: extends "${spec}" names a starter pack; install it with \`yxu add ${src.name}\` instead`);
+    if (src.kind === "local") {
+      if (remoteParent) throw new Error(`${file}: a remote base can only extend other remote files, not "${spec}"`);
+      if (!existsSync(src.path) || !statSync(src.path).isFile()) throw new Error(`${file}: extends "${spec}": ${src.path} is not a file`);
+      text = readFileSync(src.path, "utf8");
+      label = src.path;
+    } else {
+      text = remoteFile(spec, lock, env);
+      label = spec;
+    }
+    if (stack.includes(label)) throw new Error(`extends loops: ${[...stack, label].join(" → ")}`);
+    const resolved = withExtends(readLayerText(text, label).data, label, lock, env, [...stack, label]);
+    merge(base, resolved, "extends", {});
+  }
+  merge(base, data, "extends", {});
+  return base;
+}
+
+/** The text of a remote `extends:` file: from the cache when it matches yxu.lock, else fetched. */
+function remoteFile(spec: string, lock: string, env: NodeJS.ProcessEnv): string {
+  const src = parseSource(spec);
+  if (src.kind !== "git") throw new Error(`not a remote file: ${spec}`);
+  const locked = readLock(lock).extends[spec];
+  const dir = join(cacheDir(env), "extends");
+  const key = createHash("sha256").update(spec).digest("hex").slice(0, 16);
+  if (locked?.commit) {
+    const cached = join(dir, `${key}-${locked.commit}.yaml`);
+    if (existsSync(cached) && integrity(cached) === locked.integrity) return readFileSync(cached, "utf8");
+  }
+  if (!src.subpath) throw new Error(`extends "${spec}" names a repository; add the file's path, e.g. github:owner/repo/base.yaml`);
+  const got = fetchSource(src, { commit: locked?.commit });
+  try {
+    if (!statSync(got.path).isFile()) throw new Error(`extends "${spec}" is a folder, not a file`);
+    const hash = integrity(got.path);
+    if (locked && hash !== locked.integrity) {
+      throw new Error(`extends "${spec}" changed since it was locked in ${lock} (commit ${locked.commit?.slice(0, 10)}); to accept the new content run \`yxu packs update --extends\``);
+    }
+    const text = readFileSync(got.path, "utf8");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${key}-${got.commit}.yaml`), text);
+    if (!locked) {
+      const l = readLock(lock);
+      l.extends[spec] = { commit: got.commit, integrity: hash };
+      writeLock(lock, l);
+    }
+    return text;
+  } finally {
+    got.cleanup();
+  }
+}
+
+/** Forget the pinned commits of remote extends, so the next load fetches them fresh. */
+export function unlockExtends(root: string): string[] {
+  const out: string[] = [];
+  for (const scope of ["project", "user"] as const) {
+    const file = lockPath(scope, root);
+    const l = readLock(file);
+    if (!Object.keys(l.extends).length) continue;
+    out.push(...Object.keys(l.extends));
+    l.extends = {};
+    writeLock(file, l);
+  }
+  return out;
 }

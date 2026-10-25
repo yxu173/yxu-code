@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/yxu173/yxu-code/main/schema/yxu-pack.schema.json
+# A yxu starter pack. Install it with: yxu add node
+name: node
+version: 1.0.0
+description: >-
+  Node.js and TypeScript projects: the project's test script as the verify command (npm, pnpm, yarn or bun), conventions for agents, /node:add-tests and /node:lint.
+homepage: https://github.com/yxu173/yxu-code/tree/main/packs/node
+detect: [package.json]
+
+# Merged under your own yxu.yaml, so anything here can be overridden there.
+config:
+  settings: # the test script, with the package manager the lock file shows
+    verify: 'if [ -f pnpm-lock.yaml ]; then pnpm test; elif [ -f bun.lock ] || [ -f bun.lockb ]; then bun run test; elif [ -f yarn.lock ]; then yarn test; else npm test; fi'
