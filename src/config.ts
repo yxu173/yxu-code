@@ -1,8 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import { loadLayers } from "./config-layers.ts";
 import type { AgentProfile } from "./types.ts";
 
 /** "90s", "15m", "1h" or plain seconds → milliseconds. */
@@ -18,13 +16,13 @@ export function parseDuration(v: string | number): number {
 const Duration = z.union([z.string(), z.number()]).transform(parseDuration);
 
 const AgentSchema = z.object({
-  cli: z.enum(["commandcode", "opencode", "claude"]),
-  model: z.string().optional(),
-  permission: z.enum(["yolo", "accept-edits", "plan"]).optional(),
-  max_turns: z.number().int().positive().optional(),
-  timeout: Duration.optional(),
-  agent: z.string().optional(),
-  description: z.string().optional(),
+  cli: z.enum(["commandcode", "opencode", "claude"]).describe("Which agent CLI runs this agent"),
+  model: z.string().optional().describe("Model id for the CLI, e.g. deepseek/deepseek-v4-flash (see `yxu models`)"),
+  permission: z.enum(["yolo", "accept-edits", "plan"]).optional().describe("What the agent may do without asking"),
+  max_turns: z.number().int().positive().optional().describe("Turn limit per task"),
+  timeout: Duration.optional().describe('Kill the task after this long: "90s", "15m", "1h" or seconds'),
+  agent: z.string().optional().describe("Named agent/persona inside the CLI, if it has them"),
+  description: z.string().optional().describe("Tells the orchestrator when to use this agent"),
 });
 
 const StepId = z.string().regex(/^[a-z][a-z0-9_-]*$/, "step ids are lowercase words");
@@ -124,19 +122,21 @@ const CompactSchema = z
   })
   .default({ auto: true, window: "auto", warn_at: 0.8 });
 
-const ConfigSchema = z.object({
+export const CONFIG_VERSION = 1;
+
+export const ConfigSchema = z.object({
   orchestrator: z
     .object({
-      model: z.string().default("opus"),
-      effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
-      max_budget_usd: z.number().positive().optional(),
-      max_turns: z.number().int().positive().optional(),
+      model: z.string().default("opus").describe("Claude model that plans, delegates and reviews"),
+      effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional().describe("Reasoning effort for the orchestrator"),
+      max_budget_usd: z.number().positive().optional().describe("Stop the orchestrator when a run spends more than this"),
+      max_turns: z.number().int().positive().optional().describe("Orchestrator turn limit per run"),
       /** Load the user's global Claude settings (plugins, hooks, MCP servers). Off: much cheaper. */
-      user_settings: z.boolean().default(false),
+      user_settings: z.boolean().default(false).describe("Load your global Claude settings, plugins and MCP servers (costly)"),
     })
     .default({ model: "opus", user_settings: false }),
-  agents: z.record(z.string(), AgentSchema),
-  workflows: z.record(z.string(), WorkflowSchema).default({}),
+  agents: z.record(z.string(), AgentSchema).describe("Local agent CLIs the orchestrator can delegate to"),
+  workflows: z.record(z.string(), WorkflowSchema).default({}).describe("How the orchestrator works: auto, or a fixed pipeline of steps"),
   settings: z
     .object({
       max_diff_chars: z.number().int().positive().default(12_000),
@@ -156,11 +156,23 @@ const ConfigSchema = z.object({
 export type RawAgent = z.infer<typeof AgentSchema>;
 export type Workflow = z.infer<typeof WorkflowSchema>;
 export type Step = z.infer<typeof StepSchema>;
-export type Config = z.infer<typeof ConfigSchema> & { source: string };
+export type Config = z.infer<typeof ConfigSchema> & {
+  /** Human-readable list of the files that make up this config. */
+  source: string;
+  /** Which layer set each value ("orchestrator.model" → "local"); filled by loadLayers. */
+  origins?: Record<string, string>;
+};
 export type ContextConfig = Config["context"];
 export type CompactConfig = Config["compact"];
 
-export const DEFAULT_YAML = `# yxu configuration. Agents are local CLIs; the orchestrator is Claude Code.
+export const SCHEMA_URL = "https://raw.githubusercontent.com/yxu173/yxu-code/main/schema/yxu.schema.json";
+export const SCHEMA_COMMENT = `# yaml-language-server: $schema=${SCHEMA_URL}`;
+
+export const DEFAULT_YAML = `${SCHEMA_COMMENT}
+# yxu configuration. Agents are local CLIs; the orchestrator is Claude Code.
+# Personal overrides for this repo go in yxu.local.yaml (git-ignored); see \`yxu config\`.
+version: 1
+
 orchestrator:
   model: opus            # Claude model that plans, delegates, and reviews
   effort: high
@@ -238,50 +250,50 @@ settings:
   verify: npm test        # command that checks a result (used by verify steps and the verify tool)
 `;
 
-export function configPaths(root: string): string[] {
-  const xdg = process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config");
-  return [join(root, "yxu.yaml"), join(root, "yxu.yml"), join(xdg, "yxu", "config.yaml")];
-}
-
-export function parseConfig(text: string, source: string): Config {
-  const parsed = ConfigSchema.safeParse(parseYaml(text) ?? {});
+/** Validate a merged raw config. `where(path)` names the file a bad value came from. */
+export function validateConfig(raw: unknown, source: string, where: (path: string) => string = () => source): Config {
+  const parsed = ConfigSchema.safeParse(raw ?? {});
   if (!parsed.success) {
-    const issues = parsed.error.issues.map((i) => `  ${i.path.join(".") || "(root)"}: ${i.message}`);
+    const issues = parsed.error.issues.map((i) => {
+      const path = i.path.join(".");
+      return `  ${path || "(root)"}: ${i.message}${path && where(path) !== source ? `  (from ${where(path)})` : ""}`;
+    });
     throw new Error(`invalid config ${source}:\n${issues.join("\n")}`);
   }
-  const cfg = { ...parsed.data, source };
+  const cfg: Config = { ...parsed.data, source };
+  const bad = (path: string, msg: string) => new Error(`invalid config ${where(path)}: ${msg}`);
   const win = cfg.compact.window;
   if (win !== "auto" && (win < 100_000 || win > 1_000_000)) {
-    throw new Error(`invalid config ${source}: compact.window must be "auto" or between 100k and 1m tokens`);
+    throw bad("compact.window", `compact.window must be "auto" or between 100k and 1m tokens`);
   }
   if (cfg.context.max_diff_chars) cfg.settings.max_diff_chars = cfg.context.max_diff_chars;
   if (cfg.settings.resolver && !cfg.agents[cfg.settings.resolver]) {
-    throw new Error(`invalid config ${source}: settings.resolver "${cfg.settings.resolver}" is not an agent`);
+    throw bad("settings.resolver", `settings.resolver "${cfg.settings.resolver}" is not an agent`);
   }
   for (const [name, wf] of Object.entries(cfg.workflows)) {
-    const bad = (msg: string) => new Error(`invalid config ${source}: workflow "${name}": ${msg}`);
+    const wbad = (msg: string) => bad(`workflows.${name}`, `workflow "${name}": ${msg}`);
     for (const a of wf.allowed_agents ?? []) {
-      if (!cfg.agents[a]) throw bad(`allows unknown agent "${a}"`);
+      if (!cfg.agents[a]) throw wbad(`allows unknown agent "${a}"`);
     }
-    if (wf.mode === "pipeline" && !wf.steps?.length) throw bad("pipeline mode needs steps");
-    if (wf.mode === "auto" && wf.steps) throw bad("steps are only used in pipeline mode");
+    if (wf.mode === "pipeline" && !wf.steps?.length) throw wbad("pipeline mode needs steps");
+    if (wf.mode === "auto" && wf.steps) throw wbad("steps are only used in pipeline mode");
     const seen = new Map<string, Step["type"]>();
     for (const step of wf.steps ?? []) {
-      if (seen.has(step.id)) throw bad(`duplicate step id "${step.id}"`);
+      if (seen.has(step.id)) throw wbad(`duplicate step id "${step.id}"`);
       const agents = [
         step.type === "delegate" ? step.agent : undefined,
         step.type === "verify" || step.type === "review" ? step.fix_agent : undefined,
       ];
-      for (const a of agents) if (a && !cfg.agents[a]) throw bad(`step "${step.id}" uses unknown agent "${a}"`);
+      for (const a of agents) if (a && !cfg.agents[a]) throw wbad(`step "${step.id}" uses unknown agent "${a}"`);
       if (step.type === "delegate") {
         if (step.for_each) {
-          if (seen.get(step.for_each) !== "plan") throw bad(`step "${step.id}": for_each must name an earlier plan step`);
+          if (seen.get(step.for_each) !== "plan") throw wbad(`step "${step.id}": for_each must name an earlier plan step`);
         } else if (!step.prompt) {
-          throw bad(`step "${step.id}" needs a prompt or for_each`);
+          throw wbad(`step "${step.id}" needs a prompt or for_each`);
         }
       }
       if (step.type === "verify" && !step.command && !cfg.settings.verify) {
-        throw bad(`step "${step.id}" needs a command (or set settings.verify)`);
+        throw wbad(`step "${step.id}" needs a command (or set settings.verify)`);
       }
       seen.set(step.id, step.type);
     }
@@ -289,12 +301,16 @@ export function parseConfig(text: string, source: string): Config {
   return cfg;
 }
 
-/** Project yxu.yaml, then ~/.config/yxu/config.yaml, then built-in defaults. */
-export function loadConfig(root: string): Config {
-  for (const p of configPaths(root)) {
-    if (existsSync(p)) return parseConfig(readFileSync(p, "utf8"), p);
-  }
-  return parseConfig(DEFAULT_YAML, "(built-in defaults)");
+/** Parse and validate one complete config file (no layering). */
+export function parseConfig(text: string, source: string): Config {
+  const raw = (parseYaml(text) ?? {}) as Record<string, unknown>;
+  const { version: _version, ...rest } = raw;
+  return validateConfig(rest, source);
+}
+
+/** All layers merged: defaults → user → project → local → env (see config-layers.ts). */
+export function loadConfig(root: string, opts: { sets?: string[]; env?: NodeJS.ProcessEnv } = {}): Config {
+  return loadLayers(root, opts).config;
 }
 
 export function toProfile(a: RawAgent): AgentProfile {

@@ -6,6 +6,14 @@ before 1.0, minor versions may change the config format (with migration notes he
 ## Unreleased
 
 ### Added
+- Layered configuration: built-in defaults → `~/.config/yxu/config.yaml` → `yxu.yaml` →
+  `yxu.local.yaml` (git-ignored) → `YXU_*` environment → `--set key=value`. Maps merge, lists
+  replace, `null` removes; changing an agent's `cli` replaces that agent.
+- `yxu config` (explain, get, set, unset, paths, migrate, schema) and `/config [key]` in the
+  interface; `/save [project|local|user]` warns when a higher layer still overrides a value.
+- `version: 1` in config files, `yxu config migrate`, and a refusal for files from a newer yxu.
+- JSON Schema for config files (`schema/yxu.schema.json`), referenced by `yxu init`.
+- Errors in merged configs name the file that set the bad value.
 - Release pipeline: binaries for linux-x64/arm64 and darwin-x64/arm64 with checksums, an
   `install.sh`, and npm packages (`yxu` plus per-platform binaries).
 - CI on Linux and macOS: typecheck, tests, compiled build, PTY smoke test.

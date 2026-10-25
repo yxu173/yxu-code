@@ -10,6 +10,8 @@ export interface TuiOptions extends ThemeOptions {
   workflow?: string;
   /** Development only: scripted engine, no agents, no git. */
   demo?: boolean;
+  /** --set overrides the config was loaded with (shown by /config). */
+  sets?: string[];
 }
 
 /** Launch the interactive interface. Resolves with the results still waiting for a decision. */
@@ -27,6 +29,7 @@ export function runTui(opts: TuiOptions): Promise<{ pending: { taskId: string; a
       theme,
       workflow: opts.workflow,
       demo: opts.demo,
+      sets: opts.sets,
       engine: opts.demo ? demoEngine() : productionEngine(opts.root),
       backend: opts.demo ? demoBackend(() => app.taskSession) : undefined,
       historyFile: opts.demo ? null : undefined,

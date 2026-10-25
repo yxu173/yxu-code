@@ -84,7 +84,7 @@ describe("palette", () => {
   test("/ lists every command; typing filters by name first", () => {
     const { app, done } = setup();
     expect(paletteFor(app, "/")!.items.map((i) => i.value)).toEqual(COMMANDS.map((c) => c.name));
-    expect(paletteFor(app, "/co")!.items.map((i) => i.value)).toEqual(["concurrency", "context", "compact"]);
+    expect(paletteFor(app, "/co")!.items.map((i) => i.value)).toEqual(["config", "concurrency", "context", "compact"]);
     expect(paletteFor(app, "/hello world")).toBeUndefined(); // unknown command: no palette
     expect(paletteFor(app, "not a command")).toBeUndefined();
     done();
