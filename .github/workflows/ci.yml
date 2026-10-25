@@ -30,6 +30,9 @@ jobs:
           bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+      - name: debug shims (temporary)
+        if: runner.os == 'Windows'
+        run: bun scripts/win-debug.ts
       - name: test
         run: |
           git config --global user.name ci

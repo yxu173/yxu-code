@@ -29,7 +29,7 @@ beforeEach(() => {
   git(root, "add", ".");
   git(root, ...YXU_IDENTITY, "commit", "-qm", "init");
   bin = mkdtempSync(join(tmpdir(), "yxu-bin-"));
-  out = mkdtempSync(join(tmpdir(), "yxu-out-"));
+  out = mkdtempSync(join(tmpdir(), "yxu-out-")).replaceAll("\\", "/"); // also inside YAML strings on Windows
   fakeCli(bin, "opencode", FAKE_AGENT);
   process.env.PATH = pathWith(bin, origPath);
 });
