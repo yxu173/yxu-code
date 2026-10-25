@@ -306,6 +306,18 @@ Phases 1–3 deliver most of the value. Packs (4) only make sense once the file 
   been run (no API key on the build machine). The macOS sandbox and a network allowlist are
   not done.
 
+- **Phase 4 (sharing), in review:**
+  - packs, with `yxu add` from starter packs, git repos, git URLs and folders
+  - `yxu packs list|update|remove|install`, pinned by commit and content hash in `yxu.lock`
+  - `extends:` with remote bases pinned in the lock
+  - four starter packs (python, node, rust, go), embedded in the binary
+  - the `yxu init` wizard
+  - `agent: default` / `settings.default_agent`, so a pack's workflows don't need your agent names
+
+  The other starter packs listed in section 5 (`review-only`, `docs`, `migration`, `bench`) and
+  the discovery index are not done. `init` does not check whether an agent CLI is logged in; it
+  points to `yxu agent test` instead.
+
 ## 12. Decisions needed from the owner
 
 Decided: **MIT** license (1). The repo is `yxu-code`; the command and npm package stay `yxu` (2).

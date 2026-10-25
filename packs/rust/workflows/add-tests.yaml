@@ -1,0 +1,19 @@
+# Workflow rust:add-tests — write tests, then run the verify command and fix until it passes.
+description: Write tests for a file or module and make them pass
+mode: pipeline
+inputs:
+  target:
+    description: file, module or function to test
+steps:
+  - id: write
+    type: delegate
+    agent: default            # settings.default_agent, or your first agent
+    prompt: |
+      Write tests for {{inputs.target}} using Rust's built-in test framework (#[cfg(test)] modules for unit tests, tests/ for integration tests).
+      Cover the main behavior, edge cases and error handling, following the style of the existing tests.
+      Don't change the code under test unless a test shows a real bug; if you fix one, say so.
+      Context: {{goal}}
+  - id: verify
+    type: verify
+    fix_agent: default
+    max_rounds: 2

@@ -155,6 +155,12 @@ export const COMMANDS: Command[] = [
     run: (app) => app.reloadUserCommands(true),
   },
   {
+    name: "packs",
+    description: "Installed packs and what they add (install with `yxu add` in a shell)",
+    group: "session",
+    run: (app) => app.listPacks(),
+  },
+  {
     name: "run",
     usage: "<workflow> [name=value]… [goal]",
     description: "Run a workflow once, with inputs (e.g. /run release version=1.2.0)",
@@ -444,8 +450,8 @@ export const COMMANDS: Command[] = [
     usage: "[name]",
     description: "Switch the color theme, or list themes",
     group: "interface",
-    complete: (_app, i) =>
-      i === 0 ? [...Object.entries(BUILTIN_THEMES).map(([n, t]) => ({ value: n, description: t.about })), ...themeFiles().map((n) => ({ value: n, description: "your theme file" }))] : [],
+    complete: (app, i) =>
+      i === 0 ? [...Object.entries(BUILTIN_THEMES).map(([n, t]) => ({ value: n, description: t.about })), ...themeFiles(app.root).map((n) => ({ value: n, description: "theme file" }))] : [],
     run: (app, [name]) => (name ? app.switchTheme(name) : app.listThemes()),
   },
   {

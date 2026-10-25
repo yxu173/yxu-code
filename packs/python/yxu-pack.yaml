@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/yxu173/yxu-code/main/schema/yxu-pack.schema.json
+# A yxu starter pack. Install it with: yxu add python
+name: python
+version: 1.0.0
+description: >-
+  Python projects: pytest as the verify command, Python conventions for agents, /python:add-tests and /python:lint.
+homepage: https://github.com/yxu173/yxu-code/tree/main/packs/python
+detect: [pyproject.toml, setup.py, setup.cfg, requirements.txt, Pipfile]
+
+# Merged under your own yxu.yaml, so anything here can be overridden there.
+config:
+  settings: # pytest through uv or poetry when the project uses them
+    verify: 'if [ -f uv.lock ]; then uv run pytest -q; elif [ -f poetry.lock ]; then poetry run pytest -q; else python3 -m pytest -q; fi'

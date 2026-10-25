@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { userConfigDir } from "../config-layers.ts";
+import { packContentDirs } from "../packs.ts";
 import { INSTRUMENT, paletteFrom, UNICODE_GLYPHS, type ColorRole, type Glyphs, type Palette, type RGB } from "./theme.ts";
 
 const ROLES: ColorRole[] = ["ivory", "dim", "faint", "cyan", "amber", "violet", "fault", "bg", "panel"];
@@ -65,10 +66,28 @@ const hex = (h: string): RGB => {
 
 export const themesDir = () => join(userConfigDir(), "themes");
 
-/** Names of theme files in ~/.config/yxu/themes. */
-export function themeFiles(): string[] {
-  const dir = themesDir();
-  return existsSync(dir) ? readdirSync(dir).filter((f) => /^[\w-]+\.ya?ml$/.test(f)).map((f) => f.replace(/\.ya?ml$/, "")).sort() : [];
+/** Where theme files are looked up, first wins: yours, then project packs', then user packs'. */
+function themeDirs(root?: string): string[] {
+  if (!root) return [themesDir()];
+  return [themesDir(), ...packContentDirs(root, "themes", "project").map((d) => d.dir), ...packContentDirs(root, "themes", "user").map((d) => d.dir)];
+}
+
+/** Theme files by name (yours win over packs'). */
+export function themeFileMap(root?: string): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const dir of themeDirs(root)) {
+    if (!existsSync(dir)) continue;
+    for (const f of readdirSync(dir).sort()) {
+      const m = /^([\w-]+)\.ya?ml$/.exec(f);
+      if (m && !out.has(m[1]!)) out.set(m[1]!, join(dir, f));
+    }
+  }
+  return out;
+}
+
+/** Names of theme files in ~/.config/yxu/themes and in packs. */
+export function themeFiles(root?: string): string[] {
+  return [...themeFileMap(root).keys()].sort();
 }
 
 export interface LoadedTheme {
@@ -78,18 +97,18 @@ export interface LoadedTheme {
 }
 
 /** A built-in theme or a theme file. Throws with a readable message. */
-export function loadTheme(name: string, seen: string[] = []): LoadedTheme {
-  const file = ["yaml", "yml"].map((x) => join(themesDir(), `${name}.${x}`)).find(existsSync);
+export function loadTheme(name: string, root?: string, seen: string[] = []): LoadedTheme {
+  const file = themeFileMap(root).get(name);
   if (!file) {
     const b = BUILTIN_THEMES[name];
-    if (!b) throw new Error(`unknown theme "${name}" (built-in: ${Object.keys(BUILTIN_THEMES).join(", ")}${themeFiles().length ? `; yours: ${themeFiles().join(", ")}` : ""})`);
+    if (!b) throw new Error(`unknown theme "${name}" (built-in: ${Object.keys(BUILTIN_THEMES).join(", ")}${themeFiles(root).length ? `; yours: ${themeFiles(root).join(", ")}` : ""})`);
     return { palette: b.palette };
   }
   if (seen.includes(name)) throw new Error(`theme ${name} extends itself (${[...seen, name].join(" → ")})`);
   const parsed = ThemeFile.safeParse(parseYaml(readFileSync(file, "utf8")) ?? {});
   if (!parsed.success) throw new Error(`${file}: ${parsed.error.issues.map((i) => `${i.path.join(".") || "theme"}: ${i.message}`).join("; ")}`);
   const t = parsed.data;
-  const base = loadTheme(t.extends ?? "instrument", [...seen, name]);
+  const base = loadTheme(t.extends ?? "instrument", root, [...seen, name]);
   const rgb = { ...base.palette.rgb, ...Object.fromEntries(Object.entries(t.colors ?? {}).map(([k, v]) => [k, hex(v)])) } as Palette["rgb"];
   const palette = paletteFrom(name, rgb, { ...base.palette.ansi, ...t.ansi });
   const unknown = Object.keys(t.glyphs ?? {}).filter((g) => !(g in UNICODE_GLYPHS) || g === "step" || g === "pulse");

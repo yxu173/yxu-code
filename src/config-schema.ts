@@ -1,4 +1,5 @@
 /** JSON Schema for yxu config files, for editor completion and validation (schema/yxu.schema.json). */
+import { ManifestSchema } from "./packs.ts";
 import { z } from "zod";
 import { CONFIG_VERSION, ConfigSchema, SCHEMA_URL } from "./config.ts";
 
@@ -25,3 +26,26 @@ export function configJsonSchema(): Record<string, unknown> {
 }
 
 export const schemaText = () => `${JSON.stringify(configJsonSchema(), null, 2)}\n`;
+
+export const PACK_SCHEMA_URL = "https://raw.githubusercontent.com/yxu173/yxu-code/main/schema/yxu-pack.schema.json";
+
+/** JSON Schema for a pack's yxu-pack.yaml: the manifest fields, with `config` as a config file. */
+export function packJsonSchema(): Record<string, unknown> {
+  const manifest = z.toJSONSchema(ManifestSchema, { target: "draft-7", io: "input", unrepresentable: "any" }) as Record<string, unknown>;
+  const config = configJsonSchema();
+  const configProps = { ...(config.properties as Record<string, unknown>) };
+  delete configProps.version;
+  delete configProps.extends;
+  const props = manifest.properties as Record<string, unknown>;
+  props.config = { type: "object", description: (props.config as { description?: string }).description, properties: configProps, additionalProperties: false };
+  return {
+    $schema: "http://json-schema.org/draft-07/schema#",
+    $id: PACK_SCHEMA_URL,
+    title: "yxu pack manifest (yxu-pack.yaml)",
+    ...Object.fromEntries(Object.entries(manifest).filter(([k]) => k !== "$schema")),
+    // Recursive parts of the config (workflow steps) live here.
+    ...(config.definitions ? { definitions: config.definitions } : {}),
+  };
+}
+
+export const packSchemaText = () => `${JSON.stringify(packJsonSchema(), null, 2)}\n`;

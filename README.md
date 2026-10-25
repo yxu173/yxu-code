@@ -45,7 +45,7 @@ npm, Homebrew and AUR installs update through their own package manager.
 ```sh
 cd your-git-repo
 yxu doctor         # checks Claude Code, your agent CLIs and the config
-yxu init           # writes a starter yxu.yaml (agents, workflows, verify command)
+yxu init           # finds your agent CLIs, picks models and a starter pack, writes yxu.yaml
 yxu                # open the interface; describe a goal
 yxu --demo         # a scripted tour of the interface: no agents, no git changes, no cost
 ```
@@ -63,7 +63,9 @@ an entry from a lower layer:
 | layer | file | for |
 |---|---|---|
 | defaults | built in | starter agents and workflows, used until some file defines `agents` |
+| user packs | `~/.config/yxu/packs/<name>/` | packs you installed with `yxu add --user` |
 | user | `~/.config/yxu/config.yaml` | you, in every repo (your own agents, preferred models) |
+| packs | `.yxu/packs/<name>/` | packs installed in the repo with `yxu add`; committed |
 | project | `yxu.yaml` | the team; committed |
 | local | `yxu.local.yaml` | you, in this repo; git-ignored automatically |
 | env | `YXU_ORCHESTRATOR_MODEL=sonnet`, `YXU_SETTINGS_CONCURRENCY=2`, … | CI and scripts (orchestrator, settings, context, compact keys) |
@@ -88,6 +90,9 @@ yxu config migrate [--write]        # add/upgrade the version: line (shows the d
 yxu config schema                   # JSON Schema; files from yxu init reference it for editor completion
 ```
 
+A file can start from shared bases with `extends: [./base.yaml, github:acme/presets/team.yaml]`
+(remote ones are pinned in `yxu.lock`).
+
 Every file carries `version: 1`. A file written for a newer yxu is refused with a hint to
 `yxu update`, and `yxu doctor` flags files without a version. Edits from `yxu config set` and
 `/save` are validated against the merged result of all layers before anything is written.
@@ -111,6 +116,21 @@ and the same under `~/.config/yxu/` for yourself. A workflow can lint, have an a
 lint found, test, ask you at a gate, and open a PR. The interface command `/ship <title>` can
 run it, all without touching yxu's code. See **[docs/CUSTOMIZING.md](docs/CUSTOMIZING.md)**
 for step types, expressions, commands, prompt overrides, hooks, themes and key bindings.
+
+### Packs
+
+A pack shares a whole setup in one command:
+
+```sh
+yxu add python                   # starter packs: python, node, rust, go
+yxu add github:acme/yxu-review   # any git repo or folder with a yxu-pack.yaml
+yxu packs                        # what's installed, checked against yxu.lock
+```
+
+A pack bundles config, workflows, commands, prompt additions and themes. Its names get its own
+prefix (`/python:add-tests`), and it is pinned by commit in `yxu.lock`. Before installing, it
+shows everything it can run. See **[docs/PACKS.md](docs/PACKS.md)**, which also explains how
+to write one.
 
 See [PLAN.md](PLAN.md) for the design and history and
 [docs/PUBLIC_PLAN.md](docs/PUBLIC_PLAN.md) for the customization roadmap.
@@ -168,6 +188,7 @@ ids, repo files, on/off. Commands also work while a run is going (changes apply 
 | `/panel [on\|off]` `/motion on\|off` `/ascii on\|off` | the interface |
 | `/save [project\|local\|user]` | write this session's setting changes to yxu.yaml, yxu.local.yaml or your user config (comments kept, validated first) |
 | `/config [key]` | every setting and the config layer it came from |
+| `/packs` | installed packs, their state against yxu.lock, and what each adds |
 
 **Models come from the CLIs themselves:** `cmd --list-models` (Command Code: 93 models in
 sections), `opencode models --verbose` (OpenCode: every configured provider, with context size

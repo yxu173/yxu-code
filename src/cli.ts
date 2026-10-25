@@ -2,8 +2,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { DEFAULT_YAML, getWorkflow, loadConfig, toProfile, type Config } from "./config.ts";
-import { excludeFromGit } from "./config-edit.ts";
+import { getWorkflow, loadConfig, toProfile, type Config } from "./config.ts";
 import { loadLayers } from "./config-layers.ts";
 import { buildContextPrompt, compactSettings, formatTokens, settingSources } from "./context.ts";
 import { applyWithHooks, discardTask } from "./actions.ts";
@@ -16,7 +15,7 @@ import { createYxuServer, SERVER_NAME, TOOL_NAMES } from "./orchestrator/tools.t
 import { claudeExecutable, isCompiled, runAttached, runSync, VERSION, which } from "./platform.ts";
 import { update } from "./update.ts";
 import { withRunHooks } from "./hooks.ts";
-import { needsTrust, setTrust } from "./trust.ts";
+import { needsTrust } from "./trust.ts";
 import { sandboxAvailable } from "./sandbox.ts";
 import { describe, type Answer, type Asker } from "./permissions.ts";
 import { commandUsage, expandCommand, loadUserCommands } from "./user-commands.ts";
@@ -46,7 +45,14 @@ Usage:
   yxu show <task-id>        print the stored result and diff
   yxu apply <task-id>       merge the task branch into your current branch
   yxu discard <task-id>     delete the task worktree and branch
-  yxu init                  write a starter yxu.yaml in the repo root
+  yxu init [--yes] [--pack name|none] [--agents a,b] [--force]
+                            set up this repo: finds your agent CLIs, picks models and a
+                            starter pack, writes a commented yxu.yaml
+  yxu add <source> [--user] [--as name] [--yes]
+                            install a pack: a starter pack (python, node, rust, go),
+                            github:owner/repo[/path][@ref], a git URL, or ./folder
+  yxu packs [list [-v]|update [name...]|remove <name>|install]
+                            installed packs, pinned in yxu.lock (install: restore from the lock)
   yxu run "/<command> [args]"   run one of your commands (.yxu/commands/<command>.md)
   yxu commands              list your commands
   yxu trust [--revoke|--list]
@@ -475,20 +481,6 @@ async function chat(argv: string[]) {
   process.exit(code ?? 0);
 }
 
-/** Guess the project's test command for `yxu init`. */
-function detectVerify(root: string): string | undefined {
-  const has = (f: string) => existsSync(join(root, f));
-  if (has("package.json")) {
-    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-    if (pkg.scripts?.test) return has("bun.lock") || has("bun.lockb") ? "bun run test" : has("pnpm-lock.yaml") ? "pnpm test" : "npm test";
-  }
-  if (has("Cargo.toml")) return "cargo test";
-  if (has("go.mod")) return "go test ./...";
-  if (has("pyproject.toml") || has("pytest.ini") || has("setup.py")) return "python -m pytest -q";
-  if (has("Makefile") && /^test:/m.test(readFileSync(join(root, "Makefile"), "utf8"))) return "make test";
-  return undefined;
-}
-
 function loadResult(root: string, id: string): TaskResult {
   return readTaskRecord(root, id) ?? die(`no task ${id}`);
 }
@@ -537,27 +529,6 @@ function discard(id: string) {
   const r = discardTask(repoRoot(process.cwd()), id);
   if (!r.ok) die(r.message);
   console.log(`✓ ${r.message}`);
-}
-
-function init() {
-  const root = repoRoot(process.cwd());
-  const path = join(root, "yxu.yaml");
-  if (existsSync(path)) die(`${path} already exists`);
-  const verify = detectVerify(root);
-  const yaml = verify
-    ? DEFAULT_YAML.replace(/verify: npm test .*/, `verify: ${verify}   # detected; used by verify steps and the verify tool`)
-    : DEFAULT_YAML.replace(/  verify: npm test .*\n/, "  # verify: npm test     # set your test command to enable verify steps\n").replace(
-        /      - id: verify\n        type: verify\n        fix_agent: coder\n/,
-        "",
-      );
-  writeFileSync(path, yaml);
-  excludeFromGit(root, "yxu.local.yaml");
-  setTrust(root, true); // you wrote this config, so commands in it may run
-  console.log(
-    `✓ wrote ${path}${verify ? ` (verify: ${verify})` : ""}\n` +
-      `  edit the agents and models, then: yxu agents\n` +
-      `  personal overrides: yxu config set <key> <value> --local  (yxu.local.yaml, git-ignored)`,
-  );
 }
 
 function agents() {
@@ -638,7 +609,7 @@ function contextInfo() {
   if (files.some((f) => f.missing)) process.exit(1);
 }
 
-function doctor() {
+async function doctor() {
   let bad = 0;
   console.log(`  yxu          ${VERSION}${isCompiled() ? " (binary)" : ""}  ${process.platform}-${process.arch}`);
   try {
@@ -681,8 +652,17 @@ function doctor() {
         console.log(`✗ agent        ${name}: \`${a.command[0]}\` not found on PATH`);
       }
     }
+    const { packStatus } = await import("./pack-install.ts");
+    for (const p of packStatus(repoRoot(process.cwd()))) {
+      const what = `${p.name}${p.version ? ` ${p.version}` : ""} (${p.scope}${p.source ? `, ${p.source}` : ""})`;
+      if (p.state === "ok") console.log(`✓ pack         ${what}`);
+      else if (p.state === "missing") {
+        bad++;
+        console.log(`✗ pack         ${what} is in yxu.lock but not installed: \`yxu packs install\``);
+      } else console.log(`! pack         ${what} ${p.state === "modified" ? "differs from yxu.lock (edited by hand?); `yxu packs update` re-pins it" : "is not in yxu.lock; reinstall it with `yxu add`"}`);
+    }
     for (const l of layers) {
-      if (l.file && l.exists && l.version === undefined) console.log(`! config       ${l.file} has no version; run \`yxu config migrate\``);
+      if (l.file && l.exists && !l.pack && l.version === undefined) console.log(`! config       ${l.file} has no version; run \`yxu config migrate\``);
     }
   } catch (e) {
     bad++;
@@ -729,14 +709,25 @@ try {
     case "discard":
       discard(rest[0] ?? die("missing task id"));
       break;
-    case "init":
-      init();
+    case "init": {
+      const { values } = parseArgs({ args: rest, options: { yes: { type: "boolean", short: "y" }, pack: { type: "string" }, agents: { type: "string" }, force: { type: "boolean" } } });
+      const { init } = await import("./init.ts");
+      await init({ yes: values.yes, pack: values.pack, agents: values.agents?.split(",").map((a) => a.trim()).filter(Boolean), force: values.force }, (l) => console.log(l), dim);
       break;
+    }
+    case "add": {
+      const { addCommand } = await import("./packs-cli.ts");
+      process.exit(await addCommand(rest));
+    }
+    case "packs": {
+      const { packsCommand } = await import("./packs-cli.ts");
+      process.exit(await packsCommand(rest));
+    }
     case "agents":
       agents();
       break;
     case "doctor":
-      doctor();
+      await doctor();
       break;
     case "context":
       contextInfo();

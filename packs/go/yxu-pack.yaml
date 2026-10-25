@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/yxu173/yxu-code/main/schema/yxu-pack.schema.json
+# A yxu starter pack. Install it with: yxu add go
+name: go
+version: 1.0.0
+description: >-
+  Go projects: go vet and go test as the verify command, Go conventions for agents, /go:add-tests and /go:lint.
+homepage: https://github.com/yxu173/yxu-code/tree/main/packs/go
+detect: [go.mod]
+
+# Merged under your own yxu.yaml, so anything here can be overridden there.
+config:
+  settings:
+    verify: 'go vet ./... && go test ./...'

@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/yxu173/yxu-code/main/schema/yxu-pack.schema.json
+# A yxu starter pack. Install it with: yxu add rust
+name: rust
+version: 1.0.0
+description: >-
+  Rust projects: cargo test as the verify command, Rust conventions for agents, /rust:add-tests and /rust:lint (clippy).
+homepage: https://github.com/yxu173/yxu-code/tree/main/packs/rust
+detect: [Cargo.toml]
+
+# Merged under your own yxu.yaml, so anything here can be overridden there.
+config:
+  settings:
+    verify: 'cargo test --quiet'

@@ -1,6 +1,7 @@
 /**
  * Custom slash commands: Markdown files with YAML front matter.
  *   ~/.config/yxu/commands/<name>.md   (personal)    <repo>/.yxu/commands/<name>.md   (team; wins)
+ *   <pack>/commands/<name>.md          (from a pack: /<pack>:<name>)
  *
  *   ---
  *   description: Add tests for a file and make them pass
@@ -19,6 +20,7 @@ import { z } from "zod";
 import type { Config, Workflow } from "./config.ts";
 import { userConfigDir } from "./config-layers.ts";
 import { render, type Scope } from "./expr.ts";
+import { packContentDirs, packWorkflowName } from "./packs.ts";
 import { frontMatter } from "./prompts.ts";
 
 const ArgSpec = z.union([
@@ -74,10 +76,11 @@ export type Expanded =
 const guessComplete = (name: string): CommandArg["complete"] =>
   /^(file|path|files|paths)$/.test(name) ? "file" : name === "agent" ? "agent" : name === "workflow" ? "workflow" : "none";
 
-/** Parse one command file. Throws with a message naming the file. */
-export function parseCommandFile(text: string, file: string, scope: UserCommand["scope"], cfg: Config): UserCommand {
-  const name = /([\w-]+)\.md$/.exec(file)?.[1]?.toLowerCase();
-  if (!name || !/^[a-z][a-z0-9-]*$/.test(name)) throw new Error(`${file}: command file names are lowercase words, e.g. add-tests.md`);
+/** Parse one command file. Throws with a message naming the file. A pack's commands are /<pack>:<name>. */
+export function parseCommandFile(text: string, file: string, scope: UserCommand["scope"], cfg: Config, pack?: { name: string }): UserCommand {
+  const base = /([\w-]+)\.md$/.exec(file)?.[1]?.toLowerCase();
+  if (!base || !/^[a-z][a-z0-9-]*$/.test(base)) throw new Error(`${file}: command file names are lowercase words, e.g. add-tests.md`);
+  const name = pack ? `${pack.name}:${base}` : base;
   let fm: ReturnType<typeof frontMatter>;
   try {
     fm = frontMatter(text);
@@ -87,6 +90,7 @@ export function parseCommandFile(text: string, file: string, scope: UserCommand[
   const parsed = Meta.safeParse(fm.meta);
   if (!parsed.success) throw new Error(`${file}: ${parsed.error.issues.map((i) => `${i.path.join(".") || "front matter"}: ${i.message}`).join("; ")}`);
   const m = parsed.data;
+  if (pack && m.workflow) m.workflow = packWorkflowName(pack, m.workflow, cfg.workflows);
   const kind = m.kind ?? (m.command ? "shell" : m.inputs ? "workflow" : "prompt");
   const body = (kind === "shell" ? (m.command ?? fm.body) : fm.body).trim();
   const bad = (msg: string) => new Error(`${file}: ${msg}`);
@@ -124,13 +128,19 @@ export function parseCommandFile(text: string, file: string, scope: UserCommand[
 export function loadUserCommands(root: string, cfg: Config, reserved: string[] = []): { commands: UserCommand[]; errors: string[] } {
   const byName = new Map<string, UserCommand>();
   const errors: string[] = [];
-  for (const [scope, dir] of [["user", join(userConfigDir(), "commands")], ["project", join(root, ".yxu", "commands")]] as const) {
+  const dirs: { scope: UserCommand["scope"]; dir: string; pack?: { name: string } }[] = [
+    ...packContentDirs(root, "commands", "user").map(({ pack, dir }) => ({ scope: "user" as const, dir, pack })),
+    { scope: "user", dir: join(userConfigDir(), "commands") },
+    ...packContentDirs(root, "commands", "project").map(({ pack, dir }) => ({ scope: "project" as const, dir, pack })),
+    { scope: "project", dir: join(root, ".yxu", "commands") },
+  ];
+  for (const { scope, dir, pack } of dirs) {
     if (!existsSync(dir)) continue;
     for (const entry of readdirSync(dir).sort()) {
       if (!entry.endsWith(".md")) continue;
       const file = join(dir, entry);
       try {
-        const c = parseCommandFile(readFileSync(file, "utf8"), file, scope, cfg);
+        const c = parseCommandFile(readFileSync(file, "utf8"), file, scope, cfg, pack);
         if (reserved.includes(c.name)) {
           errors.push(`${file}: /${c.name} is a built-in command; rename the file`);
           continue;

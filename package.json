@@ -15,7 +15,8 @@
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "schema": "bun -e 'import { schemaText } from \"./src/config-schema.ts\"; await Bun.write(\"schema/yxu.schema.json\", schemaText())'",
+    "schema": "bun -e 'import { packSchemaText, schemaText } from \"./src/config-schema.ts\"; await Bun.write(\"schema/yxu.schema.json\", schemaText()); await Bun.write(\"schema/yxu-pack.schema.json\", packSchemaText())'",
+    "packs": "bun scripts/gen-packs.ts",
     "build": "bun build --compile src/cli.ts --outfile dist/yxu",
     "release:build": "bun scripts/build-release.ts",
     "smoke": "sh scripts/smoke.sh dist/yxu"

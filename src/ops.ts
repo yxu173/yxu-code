@@ -117,7 +117,7 @@ export class TaskOps {
       const result = await runTask({
         agentName: agent,
         profile,
-        prompt: prompt(this.root, "subagent-preamble", SUBAGENT_PREAMBLE) + task,
+        prompt: `${prompt(this.root, "subagent-preamble", SUBAGENT_PREAMBLE).trimEnd()}\n\nTASK:\n${task}`,
         title: task,
         cwd: this.root,
         baseRef: base.baseRef,
