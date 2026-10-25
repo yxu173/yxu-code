@@ -328,8 +328,12 @@ Phases 1–3 deliver most of the value. Packs (4) only make sense once the file 
   panel section, verified in the compiled binary in a real terminal. A pipeline ran with OpenCode
   as planner, coder and reviewer (no Claude). Decisions taken: TypeScript-only plugins for v1
   (§12.5); Claude stays the default, and the orchestrator interface covers pipeline steps (§12.3).
-  Native Windows is verified by CI only (no Windows machine); agent CLIs installed as npm `.cmd`
-  shims are untested there.
+  Native Windows is verified by CI only (no Windows machine):
+  - the whole test suite runs on windows-latest, including agents launched through npm-style
+    `.cmd` shims with multi-line prompts;
+  - the release zip passes a smoke test (`init`, packs, config).
+
+  No real agent CLI has been run on Windows.
 
 ## 12. Decisions needed from the owner
 
