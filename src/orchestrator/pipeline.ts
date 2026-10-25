@@ -6,6 +6,7 @@ import { Session, TaskOps } from "../ops.ts";
 import { plannerBase, prompt, reviewerBase } from "../prompts.ts";
 import { newTaskId } from "../runner.ts";
 import type { TaskResult } from "../types.ts";
+import { guard } from "../trust.ts";
 import { runVerify } from "../verify.ts";
 import { askOrchestrator, sessionPath, type OrchestratorRender, type RunOutcome } from "./run.ts";
 
@@ -116,6 +117,7 @@ export async function runPipeline(opts: PipelineOptions): Promise<RunOutcome> {
     allowedAgents: workflow.allowed_agents,
     signal: abort.signal,
     hooks: ui.hooks,
+    ask: ui.ask,
   });
   const log: string[] = [];
   let costUsd = 0;
@@ -264,6 +266,7 @@ ${wfInstructions}${step.instructions ? `\nStep instructions:\n${render(step.inst
 
       case "verify": {
         const command = step.command ? render(step.command, scope, { shell: true }) : cfg.settings.verify!;
+        guard(cfg, step.command ? `workflows.${f.workflow.name}` : "settings.verify", `\`${command}\` (workflow ${f.workflow.name}, step ${step.id})`);
         for (let round = 1; ; round++) {
           const v = await ops.verify(cur.head, command);
           const output = ops.formatVerify(v);
@@ -318,6 +321,7 @@ ${wfInstructions}${step.instructions ? `\nStep instructions:\n${render(step.inst
 
       case "shell": {
         const command = render(step.command, scope, { shell: true });
+        guard(cfg, `workflows.${f.workflow.name}`, `\`${command}\` (workflow ${f.workflow.name}, step ${step.id})`);
         const env: Record<string, string> = {
           YXU_GOAL: goal,
           YXU_REPO: root,

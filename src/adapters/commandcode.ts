@@ -26,7 +26,7 @@ export const commandcode: Adapter = {
       "--no-auto-update",
       "--no-session",
       "--permission-mode",
-      PERMISSION[profile.permission ?? "yolo"]!,
+      PERMISSION[profile.permission ?? "accept-edits"]!,
       "--max-turns",
       String(profile.maxTurns ?? 60),
     ];

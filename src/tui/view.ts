@@ -450,6 +450,31 @@ export function decisionRows(state: State, w: number, ctx: ViewContext): Line[] 
   return [top, ...framed, bottom];
 }
 
+/** An agent asks to use a tool: allow once, allow for the session, or deny. */
+export function approvalRows(state: State, w: number, ctx: ViewContext): Line[] {
+  const ap = state.approval;
+  if (!ap) return [];
+  const g = ctx.theme.glyphs;
+  const amber: Style = { fg: "amber" };
+  const inner = w - 4;
+  const label: Line = [s(` ${g.attention} `, { fg: "amber", bold: true }), s("AGENT ASKS", { fg: "amber", bold: true }), s(" ")];
+  const top: Line = [s(g.tlh + g.hh, amber), ...label, s(g.hh.repeat(Math.max(0, w - lineWidth(label) - 3)) + g.trh, amber)];
+  const lines = [
+    ...wrap([s(ap.message, { fg: "ivory" })], inner),
+    [s(`not covered by ${ap.agent}'s permissions${ap.waiting ? ` · ${ap.waiting} more waiting` : ""}`, { fg: "dim" })],
+    ...wrap(
+      [
+        s("[y]", { fg: "amber", bold: true }), s(" allow once   ", { fg: "ivory" }),
+        s("[a]", { fg: "amber", bold: true }), s(" allow for this session   ", { fg: "ivory" }),
+        s("[n]", { fg: "amber", bold: true }), s(" deny", { fg: "ivory" }),
+      ],
+      inner,
+    ),
+  ];
+  const framed = lines.map((l) => [s(`${g.vh} `, amber), ...pad(l, inner), s(` ${g.vh}`, amber)]);
+  return [top, ...framed, [s(g.blh + g.hh.repeat(Math.max(0, w - 2)) + g.brh, amber)]];
+}
+
 /** A workflow gate: the run waits until the user continues or stops it. */
 export function gateRows(state: State, w: number, ctx: ViewContext): Line[] {
   const gt = state.gate;
@@ -557,6 +582,8 @@ function footerRow(state: State, w: number, ctx: ViewContext): Line {
       ? [["↑↓", "select"], ["tab", "complete"], ["enter", "run"], ["esc", "close"]]
       : state.helpOpen
       ? [["↑↓ pgup/pgdn", "scroll"], ["esc", "close help"]]
+      : state.approval
+      ? [["y", "allow once"], ["a", "allow for session"], ["n", "deny"], ["?", "help"]]
       : state.gate
       ? [["y", "continue"], ["n", "stop the workflow"], ["pgup/pgdn", "scroll"], ["?", "help"]]
       : state.status === "deciding"
@@ -602,7 +629,13 @@ export function renderFrame(state: State, editor: Editor, width: number, height:
   const headerRows: Line[] = [header(state, width, ctx), rule(width, g)];
   // The palette takes the decision box's place while it is open (the decision returns after).
   const palette = paletteRows(state, L.main, ctx);
-  const decision = palette.length ? palette : state.gate ? gateRows(state, L.main, ctx) : decisionRows(state, L.main, ctx);
+  const decision = palette.length
+    ? palette
+    : state.approval
+      ? approvalRows(state, L.main, ctx)
+      : state.gate
+        ? gateRows(state, L.main, ctx)
+        : decisionRows(state, L.main, ctx);
   const prefix = `${state.status === "working" ? g.dot : g.you} `;
   const input = inputRows(editor, L.main, 3); // " ▹ " lead
   const maxInput = Math.min(MAX_INPUT_ROWS, Math.max(1, Math.floor(height / 4)));

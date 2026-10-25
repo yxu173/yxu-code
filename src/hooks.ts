@@ -15,6 +15,7 @@ import type { Config } from "./config.ts";
 import type { Session } from "./ops.ts";
 import type { RunOutcome } from "./orchestrator/run.ts";
 import { render } from "./expr.ts";
+import { guard } from "./trust.ts";
 import { runVerify, type VerifyResult } from "./verify.ts";
 
 export const HOOK_EVENTS = ["before_run", "after_task", "before_apply", "on_failure", "on_complete"] as const;
@@ -48,6 +49,14 @@ export async function runHooks(
   const runs: HookRun[] = [];
   const failed: HookRun[] = [];
   const payload = JSON.stringify({ event, ...data });
+  if (hooksFor(cfg, event).length) {
+    try {
+      guard(cfg, `hooks.${event}`, `${event} hooks`);
+    } catch (e) {
+      const result: VerifyResult = { ok: false, command: `${event} hooks`, exitCode: null, durationMs: 0, output: (e as Error).message, timedOut: false };
+      return { ok: !BLOCKING.includes(event), runs, failed: [{ command: `${event} hooks`, result }] };
+    }
+  }
   for (const tpl of hooksFor(cfg, event)) {
     let command: string;
     try {

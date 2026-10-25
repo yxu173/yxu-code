@@ -16,6 +16,7 @@ import { homedir } from "node:os";
 import { join, relative } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { CONFIG_VERSION, DEFAULT_YAML, validateConfig, type Config } from "./config.ts";
+import { isTrusted } from "./trust.ts";
 
 export const LAYERS = ["defaults", "user", "project", "local", "env", "flags"] as const;
 export type LayerName = (typeof LAYERS)[number];
@@ -240,6 +241,7 @@ export function loadLayers(root: string, opts: LoadOptions = {}): Loaded {
     return wf && workflowFiles[wf] ? workflowFiles[wf] : where(path);
   });
   config.origins = origins as Record<string, string>;
+  config.trusted = isTrusted(root, env);
   return { config, layers, raw, workflowFiles };
 }
 

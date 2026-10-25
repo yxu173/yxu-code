@@ -60,22 +60,110 @@
                 "enum": [
                   "commandcode",
                   "opencode",
-                  "claude"
+                  "claude",
+                  "acp",
+                  "generic"
                 ],
-                "description": "Which agent CLI runs this agent"
+                "description": "commandcode, opencode, claude (built in); acp (any Agent Client Protocol agent); generic (any CLI, see command)"
+              },
+              "command": {
+                "description": "acp: the command that starts the agent, e.g. [gemini, --experimental-acp]. generic: argv with {{task}}, {{model}}, {{cwd}}",
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "output": {
+                "description": "generic: how to read the CLI's stdout (default text)",
+                "type": "string",
+                "enum": [
+                  "text",
+                  "json",
+                  "ndjson"
+                ]
+              },
+              "summary": {
+                "description": "generic: \"last-paragraph\" (default), \"all\", or an expression such as result or last.result",
+                "type": "string"
+              },
+              "success": {
+                "description": "generic: \"exit-code\" (default) or an expression such as \"!is_error\"",
+                "type": "string"
+              },
+              "usage": {
+                "description": "generic json/ndjson: expressions for input/output tokens and cost in USD",
+                "type": "object",
+                "properties": {
+                  "input": {
+                    "type": "string"
+                  },
+                  "output": {
+                    "type": "string"
+                  },
+                  "cost": {
+                    "type": "string"
+                  }
+                }
+              },
+              "models": {
+                "description": "generic: a command that prints one model id per line (for /model completion)",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "env": {
+                "description": "Extra environment; values may reference others as env:NAME",
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                }
               },
               "model": {
                 "description": "Model id for the CLI, e.g. deepseek/deepseek-v4-flash (see `yxu models`)",
                 "type": "string"
               },
               "permission": {
-                "description": "What the agent may do without asking",
+                "description": "accept-edits (default): edit files, ask for the rest; plan: read only; yolo: anything, no questions",
                 "type": "string",
                 "enum": [
                   "yolo",
                   "accept-edits",
                   "plan"
                 ]
+              },
+              "allow": {
+                "description": "ACP: tools approved without asking, \"kind\" or \"kind:glob\", e.g. [\"execute:npm test*\"]",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "deny": {
+                "description": "ACP: tools always refused",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "sandbox": {
+                "description": "bwrap (Linux): the agent can only write to its worktree and its own state dirs",
+                "type": "string",
+                "enum": [
+                  "bwrap",
+                  "none"
+                ]
+              },
+              "sandbox_writable": {
+                "description": "Extra writable paths in the sandbox (~ allowed)",
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               },
               "max_turns": {
                 "description": "Turn limit per task",

@@ -7,12 +7,16 @@ import { branchFor, collectChanges, createWorktree, git, removeWorktree, worktre
 import { formatHookFailure, hooksFor, runHooks } from "./hooks.ts";
 import { newTaskId, runTask, Semaphore, writeTaskRecord } from "./runner.ts";
 import { prompt, SUBAGENT_PREAMBLE } from "./prompts.ts";
-import { emptyUsage, type TaskResult } from "./types.ts";
+import type { Asker } from "./permissions.ts";
+import { guard, untrustedYolo } from "./trust.ts";
+import { emptyUsage, type AgentEvent, type TaskResult } from "./types.ts";
 import { formatVerify, runVerify, type VerifyResult } from "./verify.ts";
 
 export interface OpsHooks {
   onDelegateStart?: (info: { taskId: string; agent: string; model?: string; task: string; buildOn?: string }) => void;
   onDelegateEnd?: (result: TaskResult) => void;
+  /** Live progress from agents that stream it (ACP). */
+  onAgentEvent?: (taskId: string, e: AgentEvent) => void;
   onCombineStart?: (taskIds: string[]) => void;
   onConflict?: (files: string[], taskId: string) => void;
   onCombineEnd?: (result: TaskResult) => void;
@@ -28,6 +32,8 @@ export type SessionTask = TaskResult & { prompt: string; parents: string[]; disc
 /** Tasks produced during one orchestrator session, in order. */
 export class Session {
   tasks = new Map<string, SessionTask>();
+  /** Tool approvals answered "always" during this session. */
+  always = new Set<string>();
   /** Tasks that still have reviewable changes on a branch. */
   pending() {
     return [...this.tasks.values()].filter((t) => t.branch && !t.discarded);
@@ -76,7 +82,7 @@ export class TaskOps {
     readonly cfg: Config,
     readonly root: string,
     readonly session: Session,
-    readonly opts: { allowedAgents?: string[]; signal?: AbortSignal; hooks?: OpsHooks; onChange?: () => void } = {},
+    readonly opts: { allowedAgents?: string[]; signal?: AbortSignal; hooks?: OpsHooks; onChange?: () => void; ask?: Asker } = {},
   ) {
     this.slots = new Semaphore(cfg.settings.concurrency);
     this.allowed = opts.allowedAgents ?? Object.keys(cfg.agents);
@@ -101,9 +107,13 @@ export class TaskOps {
   async delegate(agent: string, task: string, buildOn?: string): Promise<TaskResult> {
     const base = this.check(agent, buildOn);
     if ("error" in base) throw new Error(base.error);
+    const def = this.cfg.agents[agent]!;
+    if (def.command) guard(this.cfg, `agents.${agent}.command`, `agent ${agent}'s command \`${def.command.join(" ")}\``);
     return this.slots.run(async () => {
       if (this.opts.signal?.aborted) throw new Error("run cancelled");
-      const profile = toProfile(this.cfg.agents[agent]!);
+      const profile = toProfile(def);
+      // A cloned repo can't give its agents yolo until the user trusts it.
+      if (untrustedYolo(this.cfg, agent)) profile.permission = "accept-edits";
       const result = await runTask({
         agentName: agent,
         profile,
@@ -112,6 +122,9 @@ export class TaskOps {
         cwd: this.root,
         baseRef: base.baseRef,
         signal: this.opts.signal,
+        ask: this.opts.ask,
+        always: this.session.always,
+        onEvent: (taskId, e) => this.hooks.onAgentEvent?.(taskId, e),
         onStart: (taskId) => this.hooks.onDelegateStart?.({ taskId, agent, model: profile.model, task, buildOn }),
       });
       if (result.branch && hooksFor(this.cfg, "after_task").length) await this.afterTask(result);
@@ -175,6 +188,7 @@ export class TaskOps {
   async verify(taskId?: string, command?: string): Promise<VerifyResult> {
     const cmd = command ?? this.cfg.settings.verify;
     if (!cmd) throw new Error("No verify command: pass one, or set settings.verify in yxu.yaml.");
+    if (!command) guard(this.cfg, "settings.verify", `the verify command \`${cmd}\``);
     let cwd = this.root;
     if (taskId) {
       const t = this.session.tasks.get(taskId);

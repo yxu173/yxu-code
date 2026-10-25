@@ -16,6 +16,9 @@ import { createYxuServer, SERVER_NAME, TOOL_NAMES } from "./orchestrator/tools.t
 import { claudeExecutable, isCompiled, runAttached, runSync, VERSION, which } from "./platform.ts";
 import { update } from "./update.ts";
 import { withRunHooks } from "./hooks.ts";
+import { needsTrust, setTrust } from "./trust.ts";
+import { sandboxAvailable } from "./sandbox.ts";
+import { describe, type Answer, type Asker } from "./permissions.ts";
 import { commandUsage, expandCommand, loadUserCommands } from "./user-commands.ts";
 import { runVerify } from "./verify.ts";
 import { killAllSubagents, newTaskId, runTask } from "./runner.ts";
@@ -46,11 +49,17 @@ Usage:
   yxu init                  write a starter yxu.yaml in the repo root
   yxu run "/<command> [args]"   run one of your commands (.yxu/commands/<command>.md)
   yxu commands              list your commands
+  yxu trust [--revoke|--list]
+                            let this repo's own config run commands (hooks, steps, agent commands)
   yxu keys                  the interface key bindings (rebind with ui.keys)
   yxu prompts [show <name>] built-in prompts and your overrides (.yxu/prompts/<name>.md)
   yxu config [explain|get|set|unset|paths|migrate|schema]
                             layered config: user → yxu.yaml → yxu.local.yaml → YXU_* → --set
   yxu agents                list configured agents and workflows
+  yxu agent test <name> [--task T] [--keep]
+                            run a tiny task in a scratch repo and show what yxu understood
+  yxu agent capture <name> [--task T] [--out DIR]
+                            the same, saving raw output (bug reports, adapter fixtures)
   yxu context               show what the orchestrator sees and how it compacts
   yxu models [agent|cli] [search] [--refresh] [--json]
                             list the models each agent CLI offers
@@ -218,6 +227,7 @@ async function run(argv: string[]) {
     if (!c) die(`no custom command /${name}${errors.length ? `\n${errors.join("\n")}` : ""} (see: yxu commands)`);
     const x = expandCommand(c, args, cfg);
     if (x.kind === "shell") {
+      if (c.scope === "project" && cfg.trusted === false) die(`/${c.name} runs a command from this repository's .yxu/commands; trust the repo first: yxu trust`);
       console.log(`$ ${bold(firstLine(x.command, 100))}`);
       const v = await runVerify(root, x.command, cfg.settings.verify_timeout);
       if (v.output) console.log(v.output);
@@ -259,6 +269,27 @@ async function run(argv: string[]) {
     outcome.session.tips().map((t) => ({ taskId: t.taskId, agent: t.agent, includes: outcome.session.ancestorCount(t.taskId) })),
   );
   process.exit(outcome.ok ? 0 : 2);
+}
+
+/** Agent tool approvals on the command line: a terminal asks; without one, they are refused. */
+function cliAsker(): Asker | undefined {
+  if (!process.stdin.isTTY) return undefined;
+  let queue = Promise.resolve();
+  return (req) => {
+    // One question at a time, even when parallel agents ask together.
+    const answer = queue.then(async (): Promise<Answer> => {
+      const { createInterface } = await import("node:readline/promises");
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        const a = (await rl.question(`△ ${bold(describe(req))} — allow? [y]es once / [a]lways this run / [N]o `)).trim().toLowerCase();
+        return a === "y" || a === "yes" ? "once" : a === "a" || a === "always" ? "always" : "deny";
+      } finally {
+        rl.close();
+      }
+    });
+    queue = answer.then(() => undefined);
+    return answer;
+  };
 }
 
 /** Gates on the command line: --yes approves, a terminal asks, anything else can't answer. */
@@ -312,7 +343,12 @@ function makeRenderer(cfg: Config) {
         : note === "skipped"
           ? console.log(dim(`○ [${index}/${total}] ${id} skipped`))
           : console.log(`\n${bold(`■ [${index}/${total}] ${id}`)} ${dim(note ? `${type} · ${note}` : type)}`),
+    ask: cliAsker(),
     hooks: {
+      onAgentEvent: (_id, e) => {
+        if (e.kind === "tool" && e.status !== "started") console.log(dim(`    ${e.status === "failed" ? "✗" : "·"} ${e.name}${e.target ? ` ${e.target}` : ""}`));
+        else if (e.kind === "permission") console.log(`    △ ${e.tool} — ${e.decision}`);
+      },
       onDelegateStart: ({ taskId, agent, model, task, buildOn }) =>
         console.log(`▸ ${bold(agent)} ${dim(`${model ?? ""} [${taskId}]${buildOn ? ` on ${buildOn}` : ""}`)}\n  ${firstLine(task)}`),
       onDelegateEnd: (r) => {
@@ -516,6 +552,7 @@ function init() {
       );
   writeFileSync(path, yaml);
   excludeFromGit(root, "yxu.local.yaml");
+  setTrust(root, true); // you wrote this config, so commands in it may run
   console.log(
     `✓ wrote ${path}${verify ? ` (verify: ${verify})` : ""}\n` +
       `  edit the agents and models, then: yxu agents\n` +
@@ -544,17 +581,17 @@ function agents() {
 /** List the models each agent CLI offers. */
 async function models(argv: string[]) {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { refresh: { type: "boolean" }, json: { type: "boolean" } } });
-  const { ModelCatalog } = await import("./models.ts");
+  const { catalogKey, keyLabel, ModelCatalog } = await import("./models.ts");
   const catalog = new ModelCatalog();
-  const all: CliName[] = ["commandcode", "opencode", "claude"];
+  const all: string[] = ["commandcode", "opencode", "claude"];
   const [target, ...search] = positionals;
   let clis = all;
   if (target) {
-    if ((all as string[]).includes(target)) clis = [target as CliName];
+    if (all.includes(target)) clis = [target];
     else {
       const cfg = loadConfig(repoRoot(process.cwd()));
       const agent = cfg.agents[target] ?? die(`unknown agent or CLI "${target}"`);
-      clis = [agent.cli];
+      clis = [catalogKey(agent)];
     }
   }
   const q = search.join(" ").toLowerCase();
@@ -565,7 +602,7 @@ async function models(argv: string[]) {
     const hits = st.models.filter((m) => !q || `${m.id} ${m.group} ${m.description}`.toLowerCase().includes(q));
     result[cli] = st.status === "error" ? { error: st.error } : hits;
     if (values.json) continue;
-    console.log(`\n${bold(cli)} ${dim(st.status === "error" ? `error: ${st.error}` : `${hits.length}${q ? ` of ${st.models.length}` : ""} models`)}`);
+    console.log(`\n${bold(keyLabel(cli))} ${dim(st.status === "error" ? `error: ${st.error}` : `${hits.length}${q ? ` of ${st.models.length}` : ""} models`)}`);
     let group = "";
     for (const m of hits) {
       if (m.group !== group) console.log(dim(`  ${(group = m.group)}`));
@@ -627,6 +664,23 @@ function doctor() {
   try {
     const { config: cfg, layers } = loadLayers(repoRoot(process.cwd()));
     console.log(`✓ config       ${cfg.source} (${Object.keys(cfg.agents).length} agents)`);
+    const pending = needsTrust(cfg);
+    if (pending.length) console.log(`! trust        this repo is not trusted, so its config can't run: ${pending.join("; ")} — \`yxu trust\` if you trust it`);
+    else console.log(`✓ trust        ${cfg.trusted === false ? "not trusted (its config runs no commands)" : "trusted"}`);
+    for (const [name, a] of Object.entries(cfg.agents)) {
+      if (a.permission === "yolo") console.log(`! permission   ${name} runs with yolo: it may run any command without asking (in its own worktree${a.sandbox === "bwrap" ? ", sandboxed" : ""})`);
+      if (a.sandbox === "bwrap") {
+        const why = sandboxAvailable();
+        if (why) {
+          bad++;
+          console.log(`✗ sandbox      ${name}: ${why}`);
+        }
+      }
+      if ((a.cli === "acp" || a.cli === "generic") && a.command && !which(a.command[0]!)) {
+        bad++;
+        console.log(`✗ agent        ${name}: \`${a.command[0]}\` not found on PATH`);
+      }
+    }
     for (const l of layers) {
       if (l.file && l.exists && l.version === undefined) console.log(`! config       ${l.file} has no version; run \`yxu config migrate\``);
     }
@@ -690,6 +744,38 @@ try {
     case "models":
       await models(rest);
       break;
+    case "agent": {
+      const [sub, name, ...more] = rest;
+      if ((sub !== "test" && sub !== "capture") || !name) die("usage: yxu agent test <name> [--task T] [--keep] | yxu agent capture <name> [--task T] [--out DIR]");
+      const { values } = parseArgs({ args: more, options: { task: { type: "string" }, keep: { type: "boolean" }, out: { type: "string" }, set: { type: "string", multiple: true } } });
+      const { agentTest } = await import("./agent-test.ts");
+      const root = repoRoot(process.cwd());
+      const cfg = loadConfig(root, { sets: values.set });
+      const out = sub === "capture" ? (values.out ?? join(root, `yxu-capture-${name}-${newTaskId()}`)) : undefined;
+      const pass = await agentTest(cfg, name, { task: values.task, keep: values.keep, captureDir: out, ask: cliAsker(), print: (l) => console.log(l), dim });
+      process.exit(pass ? 0 : 1);
+    }
+    case "trust": {
+      const { isTrusted, needsTrust, setTrust, trustedRepos } = await import("./trust.ts");
+      const { values } = parseArgs({ args: rest, options: { revoke: { type: "boolean" }, list: { type: "boolean" } } });
+      if (values.list) {
+        const repos = trustedRepos();
+        console.log(repos.length ? repos.join("\n") : "no trusted repositories");
+        break;
+      }
+      const root = repoRoot(process.cwd());
+      if (values.revoke) {
+        setTrust(root, false);
+        console.log(`✓ ${root} is no longer trusted`);
+        break;
+      }
+      const before = isTrusted(root);
+      setTrust(root, true);
+      const items = needsTrust({ ...loadConfig(root), trusted: false });
+      console.log(`✓ ${before ? "already trusted" : "trusted"}: ${root}`);
+      if (items.length) console.log(dim(`  its config may now run:\n${items.map((i) => `  - ${i}`).join("\n")}`));
+      break;
+    }
     case "commands": {
       const root = repoRoot(process.cwd());
       const { commands, errors } = loadUserCommands(root, loadConfig(root));

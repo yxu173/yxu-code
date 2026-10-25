@@ -2,6 +2,8 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { applyTask, applyWithHooks, diffStat, discardTask, type ActionResult } from "../actions.ts";
 import { hooksFor, withRunHooks } from "../hooks.ts";
+import { describe, type Answer, type PermissionRequest } from "../permissions.ts";
+import { needsTrust, setTrust } from "../trust.ts";
 import { readTaskRecord } from "../combine.ts";
 import { getWorkflow, type Config, type Workflow } from "../config.ts";
 import { branchFor, excludeYxuDir, tryGit } from "../git.ts";
@@ -24,7 +26,7 @@ import { recoveryHint } from "./recovery.ts";
 import { createTheme, type Glyphs, type Palette, type Theme } from "./theme.ts";
 import { BUILTIN_THEMES, loadTheme, themeFiles, themesDir } from "./themes.ts";
 import { buildKeymap, KEY_ACTIONS, translateKey, type KeyAction, type Keymap } from "../keymap.ts";
-import { ModelCatalog } from "../models.ts";
+import { catalogKey, keyLabel, ModelCatalog } from "../models.ts";
 import type { CliName } from "../types.ts";
 import { computeLayout, conversationRows, renderFrame, type Frame } from "./view.ts";
 
@@ -157,7 +159,30 @@ export class App {
       this.fail((e as Error).message, "using the default keys");
     }
     if (ui.theme !== o.theme.name) this.switchTheme(ui.theme, true);
-    if (!o.demo) this.reloadUserCommands();
+    if (!o.demo) {
+      this.reloadUserCommands();
+      this.announceTrust();
+    }
+  }
+
+  /** In a repo the user hasn't trusted, say once what its config would run. */
+  private announceTrust() {
+    const items = needsTrust(this.cfg);
+    const shell = this.userCommands.filter((c) => c.scope === "project" && c.kind === "shell").map((c) => `/${c.name}`);
+    if (this.cfg.trusted !== false || (!items.length && !shell.length)) return;
+    const list = [...items, ...(shell.length ? [`shell commands ${shell.join(", ")}`] : [])];
+    this.store.add({
+      kind: "notice",
+      tone: "attention",
+      text: `**This repository is not trusted.** Its config wants to run:\n${list.map((i) => `- ${i}`).join("\n")}\n\nThose stay off until you trust it with /trust. Agents and everything else work as usual.`,
+    });
+  }
+
+  /** `/trust [off]`: trust this repo (commands from its config may run), or take it back. */
+  trustRepo(off = false) {
+    setTrust(this.o.root, !off);
+    this.cfg.trusted = !off;
+    this.note(off ? "This repository is no longer trusted; commands from its config won't run." : "Trusted this repository: commands from its config (hooks, steps, agent commands) may run now.", off ? "attention" : "ok");
   }
 
   // ── lifecycle ──────────────────────────────────────────────────────────────
@@ -341,6 +366,14 @@ export class App {
           return this.store.changed();
       }
       return;
+    }
+
+    // An approval waits for y (once) / a (always this session) / n (deny).
+    if (st.approval && e.isEmpty) {
+      const t = k.name === "char" && !k.ctrl && !k.alt ? k.text?.toLowerCase() : undefined;
+      if (t === "y") return this.answerApproval("once");
+      if (t === "a") return this.answerApproval("always");
+      if (t === "n" || k.name === "escape") return this.answerApproval("deny");
     }
 
     // A gate waits for y/n (enter continues, esc stops) while the draft is empty.
@@ -668,7 +701,7 @@ export class App {
 
   listAgents() {
     const lines = Object.entries(this.cfg.agents).map(([n, a]) => {
-      const bits = [a.cli, a.model, a.permission ?? (a.cli === "claude" ? "accept-edits" : "yolo"), a.timeout ? `timeout ${Math.round(a.timeout / 60000)}m` : "", a.max_turns ? `${a.max_turns} turns` : ""].filter(Boolean);
+      const bits = [a.cli, a.model, a.permission ?? "accept-edits", a.timeout ? `timeout ${Math.round(a.timeout / 60000)}m` : "", a.max_turns ? `${a.max_turns} turns` : ""].filter(Boolean);
       return `- **${n}** — ${bits.join(" · ")}${a.description ? `. ${a.description}` : ""}`;
     });
     this.note(`Agents (up to ${this.cfg.settings.concurrency} at once${this.cfg.settings.resolver ? `, resolver ${this.cfg.settings.resolver}` : ""}):\n${lines.join("\n")}\n\nChange with \`/agent <name> model|timeout|permission|turns <value>\`.`);
@@ -705,16 +738,16 @@ export class App {
 
   /** Start loading model lists for the CLIs this config uses (background, cached). */
   prefetchModels() {
-    const clis = new Set(Object.values(this.cfg.agents).map((a) => a.cli));
-    for (const cli of clis) this.catalog.get(cli);
+    const keys = new Set(Object.values(this.cfg.agents).map(catalogKey));
+    for (const key of keys) this.catalog.get(key);
   }
 
   async showModels(args: string[]): Promise<void> {
     const [target, ...rest] = args;
     const clis: CliName[] = ["commandcode", "opencode", "claude"];
     if (target === "refresh") {
-      const used = [...new Set(Object.values(this.cfg.agents).map((a) => a.cli))];
-      this.note(`Asking ${used.join(", ")} for their models…`, "info");
+      const used = [...new Set(Object.values(this.cfg.agents).map(catalogKey))];
+      this.note(`Asking ${used.map(keyLabel).join(", ")} for their models…`, "info");
       await Promise.all(used.map((c) => this.catalog.refresh(c)));
       return this.showModels([]);
     }
@@ -729,7 +762,8 @@ export class App {
       });
       return this.note(`Models by CLI\n${lines.join("\n")}\n\nList one with \`/models <agent|cli> [search]\`; pick with \`/agent <name> model\` (type to search, e.g. free, flash, 1m).`);
     }
-    const cli: CliName | undefined = (clis as string[]).includes(target) ? (target as CliName) : this.cfg.agents[target]?.cli;
+    const agentDef = this.cfg.agents[target];
+    const cli: string | undefined = (clis as string[]).includes(target) ? target : agentDef ? catalogKey(agentDef) : undefined;
     if (!cli) return this.fail(`unknown agent or CLI "${target}"`, "try /models opencode, /models commandcode, or an agent name");
     const st = this.catalog.get(cli);
     if (st.status === "loading" && !st.models.length) {
@@ -742,7 +776,7 @@ export class App {
     const byGroup = new Map<string, typeof hits>();
     for (const m of hits) byGroup.set(m.group, [...(byGroup.get(m.group) ?? []), m]);
     const PER_GROUP = q ? 40 : 12;
-    const out: string[] = [`**${cli}** — ${hits.length}${q ? ` of ${st.models.length}` : ""} models${q ? ` matching "${q}"` : ""}`];
+    const out: string[] = [`**${keyLabel(cli)}** — ${hits.length}${q ? ` of ${st.models.length}` : ""} models${q ? ` matching "${q}"` : ""}`];
     for (const [g, ms] of byGroup) {
       out.push("", `**${g || "models"}** (${ms.length})`);
       for (const m of ms.slice(0, PER_GROUP)) out.push(`- \`${m.id}\`${m.description ? ` — ${m.description}` : ""}${m.isDefault ? " (default)" : ""}`);
@@ -995,6 +1029,9 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     } catch (e) {
       return this.fail((e as Error).message);
     }
+    if (x.kind === "shell" && c.scope === "project" && this.cfg.trusted === false) {
+      return this.fail(`/${c.name} runs \`${x.command}\` from this repository's .yxu/commands`, "yxu runs commands from a repo's own files only after you trust it: /trust");
+    }
     if (x.kind === "prompt") return this.startGoal(x.goal, { workflow: x.workflow });
     if (x.kind === "workflow") return this.startGoal(x.goal || `/${c.name} ${args.join(" ")}`.trim(), { workflow: x.workflow, inputs: x.inputs });
     const s = this.store;
@@ -1123,6 +1160,29 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     }, delay);
   }
 
+  private approvals: { req: PermissionRequest; resolve: (a: Answer) => void }[] = [];
+
+  /** An agent wants to use a tool its permissions don't cover: ask (one question at a time). */
+  askApproval(req: PermissionRequest): Promise<Answer> {
+    return new Promise((resolve) => {
+      this.approvals.push({ req, resolve });
+      this.showApproval(); // the first question stays up; the count of waiting ones grows
+    });
+  }
+
+  private showApproval() {
+    const next = this.approvals[0];
+    this.store.set({ approval: next ? { message: describe(next.req), agent: next.req.agent, waiting: this.approvals.length - 1 } : undefined, scroll: 0 });
+  }
+
+  answerApproval(answer: Answer) {
+    const cur = this.approvals.shift();
+    if (!cur) return;
+    this.store.add({ kind: "notice", tone: answer === "deny" ? "attention" : "ok", text: `${answer === "deny" ? "Denied" : answer === "always" ? "Allowed for this session" : "Allowed once"}: ${describe(cur.req)}` });
+    cur.resolve(answer);
+    this.showApproval();
+  }
+
   private gateAnswer?: (ok: boolean) => void;
 
   /** Show a gate and wait for the user (y continues, n stops the workflow). */
@@ -1147,6 +1207,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
 
   cancel() {
     this.answerGate(false);
+    while (this.approvals.length) this.answerApproval("deny");
     if (!this.abort || this.abort.signal.aborted) return;
     this.store.setStatus("cancelling", "stopping agents");
     this.abort.abort();
@@ -1253,6 +1314,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
           s.set({ statusNote: `step ${index}/${total} · ${id}` });
         }
       },
+      ask: (req) => this.askApproval(req),
       hooks: {
         onDelegateStart: ({ taskId, agent, model, task, buildOn }) => {
           closeRead();
@@ -1270,6 +1332,21 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
           });
           s.upsertTask({ taskId, agent, state: "running", title: first, files: 0, pending: false });
           slots(1);
+        },
+        onAgentEvent: (taskId, e) => {
+          const a = this.findActivity(taskId);
+          if (!a || a.state !== "running") return;
+          const line =
+            e.kind === "tool"
+              ? `${e.status === "failed" ? "✗" : e.status === "completed" ? "✓" : "·"} ${e.name}${e.target ? ` ${e.target}` : ""}`
+              : e.kind === "permission"
+                ? `△ ${e.tool} — ${e.decision}`
+                : e.kind === "error"
+                  ? `! ${e.message}`
+                  : undefined;
+          if (!line) return;
+          // Live progress: the newest tool shows as the row's meta, the trail in its details.
+          s.update(a, { details: [...a.details, line], meta: e.kind === "tool" && e.status === "started" ? `${e.name}${e.target ? ` ${e.target.split("/").at(-1)}` : ""}` : a.meta });
         },
         onDelegateEnd: (r) => {
           this.finishActivity(r);

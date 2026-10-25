@@ -1,9 +1,13 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { adapters } from "./adapters/index.ts";
-import { collectChanges, createWorktree, removeWorktree, repoRoot, workingDiff, type Worktree } from "./git.ts";
+import { collectChanges, createWorktree, removeWorktree, repoRoot, tryGit, workingDiff, type Worktree } from "./git.ts";
+import { runAcp } from "./acp.ts";
+import { genericCommand, genericParse } from "./adapters/generic.ts";
+import type { Asker } from "./permissions.ts";
 import { killGroup, start } from "./platform.ts";
-import type { AgentProfile, TaskResult } from "./types.ts";
+import { sandboxed } from "./sandbox.ts";
+import type { AgentEvent, AgentProfile, ParsedResult, TaskResult } from "./types.ts";
 
 export interface RunOptions {
   agentName: string;
@@ -23,6 +27,12 @@ export interface RunOptions {
   worktree?: Worktree;
   /** Called with the task id as soon as it is assigned. */
   onStart?: (taskId: string, argv: string[]) => void;
+  /** Live events while the agent works (ACP agents stream them). */
+  onEvent?: (taskId: string, e: AgentEvent) => void;
+  /** Ask the user about a tool the permission policy can't decide (ACP agents). */
+  ask?: Asker;
+  /** "Always" approvals remembered for the session. */
+  always?: Set<string>;
   signal?: AbortSignal;
 }
 
@@ -50,47 +60,96 @@ process.on("exit", () => killAllSubagents("SIGKILL"));
 
 /** Run one subagent task to completion and return a normalized result. */
 export async function runTask(opts: RunOptions): Promise<TaskResult> {
-  const adapter = adapters[opts.profile.cli];
-  if (!adapter) throw new Error(`unknown cli: ${opts.profile.cli}`);
+  const { profile } = opts;
+  const adapter = profile.cli === "acp" || profile.cli === "generic" ? undefined : adapters[profile.cli];
+  if (!adapter && profile.cli !== "acp" && profile.cli !== "generic") throw new Error(`unknown cli: ${profile.cli}`);
 
   const root = repoRoot(opts.cwd);
   const taskId = newTaskId();
   const ownWorktree = !opts.worktree && opts.isolate !== false;
   const wt = opts.worktree ?? (ownWorktree ? createWorktree(root, taskId, opts.baseRef) : undefined);
   const cwd = wt?.path ?? root;
-  const argv = adapter.command({ id: taskId, prompt: opts.prompt, cwd }, opts.profile);
+  const spec = { id: taskId, prompt: opts.prompt, cwd };
+  let argv = profile.cli === "acp" ? profile.command! : profile.cli === "generic" ? genericCommand(profile.generic!, spec, profile) : adapter!.command(spec, profile);
+  if (profile.sandbox === "bwrap") {
+    try {
+      argv = sandboxed(argv, { cli: profile.cli, worktree: cwd, writable: profile.sandboxWritable });
+    } catch (e) {
+      if (ownWorktree && wt) removeWorktree(root, taskId, true);
+      throw e;
+    }
+  }
+  const env = { ...process.env, NO_COLOR: "1", ...profile.env };
 
+  // To notice an agent that writes outside its worktree (into the user's checkout).
+  const checkoutBefore = ownWorktree ? checkoutState(root) : undefined;
   opts.onStart?.(taskId, argv);
   const dir = runDir(root, taskId);
   mkdirSync(dir, { recursive: true });
 
   const started = Date.now();
-  const proc = start(argv, { cwd, detached: true, env: { ...process.env, NO_COLOR: "1" } });
-  liveGroups.add(proc.pid);
-
   let killedReason: string | undefined;
-  const kill = (reason: string) => {
-    killedReason ??= reason;
-    killGroup(proc.pid, "SIGTERM");
-    setTimeout(() => killGroup(proc.pid, "SIGKILL"), 5000).unref();
-  };
-  const timer = setTimeout(() => kill("timeout"), opts.profile.timeoutMs ?? 15 * 60_000);
-  const onAbort = () => kill("cancelled");
-  if (opts.signal?.aborted) onAbort();
-  opts.signal?.addEventListener("abort", onAbort, { once: true });
+  let stdout: string;
+  let stderr: string;
+  let exitCode: number | null;
+  let parsed: { events: AgentEvent[]; result: ParsedResult };
+  const timeoutMs = profile.timeoutMs ?? 15 * 60_000;
 
-  const { code: exitCode, stdout, stderr } = await proc.result;
-  liveGroups.delete(proc.pid);
-  clearTimeout(timer);
-  opts.signal?.removeEventListener("abort", onAbort);
+  if (profile.cli === "acp") {
+    let pid: number | undefined;
+    const out = await runAcp({
+      agent: opts.agentName,
+      argv,
+      cwd,
+      env,
+      prompt: opts.prompt,
+      profile,
+      signal: opts.signal,
+      timeoutMs,
+      ask: opts.ask,
+      always: opts.always,
+      onEvent: (e) => opts.onEvent?.(taskId, e),
+      onPid: (p) => liveGroups.add((pid = p)),
+    });
+    if (pid) liveGroups.delete(pid);
+    ({ transcript: stdout, stderr, exitCode } = out);
+    parsed = { events: out.events, result: out.result };
+  } else {
+    const proc = start(argv, { cwd, detached: true, env });
+    liveGroups.add(proc.pid);
+    const kill = (reason: string) => {
+      killedReason ??= reason;
+      killGroup(proc.pid, "SIGTERM");
+      setTimeout(() => killGroup(proc.pid, "SIGKILL"), 5000).unref();
+    };
+    const timer = setTimeout(() => kill("timeout"), timeoutMs);
+    const onAbort = () => kill("cancelled");
+    if (opts.signal?.aborted) onAbort();
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+    ({ code: exitCode, stdout, stderr } = await proc.result);
+    liveGroups.delete(proc.pid);
+    clearTimeout(timer);
+    opts.signal?.removeEventListener("abort", onAbort);
+    parsed = profile.cli === "generic" ? genericParse(profile.generic!, stdout, stderr, exitCode) : adapter!.parse(stdout, stderr, exitCode);
+  }
 
   writeFileSync(join(dir, "stdout.log"), stdout);
   writeFileSync(join(dir, "stderr.log"), stderr);
 
-  const { events, result } = adapter.parse(stdout, stderr, exitCode);
+  const { events, result } = parsed;
   if (killedReason) {
     result.ok = false;
     result.error = `${killedReason}${result.error ? `: ${result.error}` : ""}`;
+  }
+
+  if (checkoutBefore !== undefined) {
+    const touched = changedSince(checkoutBefore, checkoutState(root));
+    if (touched.length) {
+      const warning = `wrote outside its worktree, into your checkout: ${touched.slice(0, 8).join(", ")}${touched.length > 8 ? ", …" : ""}. Check \`git status\`; for generic agents pass {{cwd}} to the CLI, or use sandbox: bwrap`;
+      result.summary = `${result.summary}\n\n[warning] ${warning}`.trim();
+      events.push({ kind: "error", message: warning });
+      opts.onEvent?.(taskId, { kind: "error", message: warning });
+    }
   }
 
   let changes = { diff: "", files: [] as string[] };
@@ -119,6 +178,24 @@ export async function runTask(opts: RunOptions): Promise<TaskResult> {
   writeFileSync(join(dir, "events.json"), JSON.stringify(events, null, 2));
   writeTaskRecord(root, full, { prompt: opts.prompt, baseRef: opts.baseRef, argv });
   return full;
+}
+
+/** `git status` lines of the user's checkout, minus yxu's own files. */
+function checkoutState(root: string): Map<string, string> {
+  const out = tryGit(root, "status", "--porcelain", "--untracked-files=all").out;
+  const m = new Map<string, string>();
+  for (const line of out.split("\n")) {
+    if (!line.trim()) continue;
+    const path = line.slice(3);
+    if (path.startsWith(".yxu/")) continue;
+    // Include the content hash, so a second edit to an already-dirty file is noticed too.
+    m.set(path, `${line.slice(0, 2)}:${tryGit(root, "hash-object", "--", path).out}`);
+  }
+  return m;
+}
+
+function changedSince(before: Map<string, string>, after: Map<string, string>): string[] {
+  return [...after].filter(([p, v]) => before.get(p) !== v).map(([p]) => p);
 }
 
 export function writeTaskRecord(root: string, r: TaskResult, extra: Record<string, unknown> = {}) {

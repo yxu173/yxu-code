@@ -1,7 +1,7 @@
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { loadLayers } from "./config-layers.ts";
-import { condition, render } from "./expr.ts";
+import { condition, evaluate, render } from "./expr.ts";
 import { buildKeymap } from "./keymap.ts";
 import type { AgentProfile } from "./types.ts";
 
@@ -18,9 +18,32 @@ export function parseDuration(v: string | number): number {
 const Duration = z.union([z.string(), z.number()]).transform(parseDuration);
 
 const AgentSchema = z.object({
-  cli: z.enum(["commandcode", "opencode", "claude"]).describe("Which agent CLI runs this agent"),
+  cli: z
+    .enum(["commandcode", "opencode", "claude", "acp", "generic"])
+    .describe("commandcode, opencode, claude (built in); acp (any Agent Client Protocol agent); generic (any CLI, see command)"),
+  command: z
+    .array(z.string())
+    .min(1)
+    .optional()
+    .describe("acp: the command that starts the agent, e.g. [gemini, --experimental-acp]. generic: argv with {{task}}, {{model}}, {{cwd}}"),
+  output: z.enum(["text", "json", "ndjson"]).optional().describe("generic: how to read the CLI's stdout (default text)"),
+  summary: z.string().optional().describe('generic: "last-paragraph" (default), "all", or an expression such as result or last.result'),
+  success: z.string().optional().describe('generic: "exit-code" (default) or an expression such as "!is_error"'),
+  usage: z
+    .object({ input: z.string().optional(), output: z.string().optional(), cost: z.string().optional() })
+    .optional()
+    .describe("generic json/ndjson: expressions for input/output tokens and cost in USD"),
+  models: z.array(z.string()).optional().describe("generic: a command that prints one model id per line (for /model completion)"),
+  env: z.record(z.string(), z.string()).optional().describe("Extra environment; values may reference others as env:NAME"),
   model: z.string().optional().describe("Model id for the CLI, e.g. deepseek/deepseek-v4-flash (see `yxu models`)"),
-  permission: z.enum(["yolo", "accept-edits", "plan"]).optional().describe("What the agent may do without asking"),
+  permission: z
+    .enum(["yolo", "accept-edits", "plan"])
+    .optional()
+    .describe("accept-edits (default): edit files, ask for the rest; plan: read only; yolo: anything, no questions"),
+  allow: z.array(z.string()).optional().describe('ACP: tools approved without asking, "kind" or "kind:glob", e.g. ["execute:npm test*"]'),
+  deny: z.array(z.string()).optional().describe("ACP: tools always refused"),
+  sandbox: z.enum(["bwrap", "none"]).optional().describe("bwrap (Linux): the agent can only write to its worktree and its own state dirs"),
+  sandbox_writable: z.array(z.string()).optional().describe("Extra writable paths in the sandbox (~ allowed)"),
   max_turns: z.number().int().positive().optional().describe("Turn limit per task"),
   timeout: Duration.optional().describe('Kill the task after this long: "90s", "15m", "1h" or seconds'),
   agent: z.string().optional().describe("Named agent/persona inside the CLI, if it has them"),
@@ -269,6 +292,8 @@ export type Config = z.infer<typeof ConfigSchema> & {
   source: string;
   /** Which layer set each value ("orchestrator.model" → "local"); filled by loadLayers. */
   origins?: Record<string, string>;
+  /** Whether the user trusts this repo to run commands from its own config (see trust.ts). */
+  trusted?: boolean;
 };
 export type ContextConfig = Config["context"];
 export type CompactConfig = Config["compact"];
@@ -290,7 +315,8 @@ agents:
   coder:
     cli: commandcode
     model: deepseek/deepseek-v4-flash
-    permission: yolo     # yolo | accept-edits | plan
+    # permission: accept-edits (default) edits files only · plan: read only
+    #             yolo: may run any command without asking (opt in per agent)
     max_turns: 60
     timeout: 15m
     description: Fast, cheap coder for small well-scoped tasks.
@@ -307,9 +333,20 @@ agents:
   claude-coder:
     cli: claude
     model: sonnet
-    permission: accept-edits
     timeout: 20m
     description: Claude Sonnet for tricky logic or when DeepSeek fails twice.
+  # Any agent that speaks ACP: live progress, and it asks you before running commands.
+  # oc-acp:
+  #   cli: acp
+  #   command: [opencode, acp]          # or [gemini, --experimental-acp]
+  #   model: opencode/deepseek-v4.1-flash-free
+  #   allow: ["execute:npm test*"]      # commands it may run without asking
+  #   sandbox: bwrap                    # Linux: it can only write to its worktree
+  # Any other CLI, described here (see docs/AGENTS.md):
+  # aider:
+  #   cli: generic
+  #   command: [aider, --yes-always, --no-auto-commits, --model, "{{model}}", --message, "{{task}}"]
+  #   model: deepseek/deepseek-chat
 
 workflows:
   default:
@@ -379,6 +416,27 @@ export function validateConfig(raw: unknown, source: string, where: (path: strin
     buildKeymap(cfg.ui.keys);
   } catch (e) {
     throw bad("ui.keys", (e as Error).message);
+  }
+  for (const [name, a] of Object.entries(cfg.agents)) {
+    const abad = (msg: string) => bad(`agents.${name}`, `agent "${name}": ${msg}`);
+    if ((a.cli === "acp" || a.cli === "generic") && !a.command) throw abad(`cli: ${a.cli} needs \`command\``);
+    if (a.cli !== "acp" && a.cli !== "generic" && a.command) throw abad(`\`command\` is only for cli: acp or generic`);
+    if (a.cli === "generic" && !a.command!.some((x) => x.includes("{{task}}") || x.includes("{{ task }}"))) {
+      throw abad("the generic command must pass the task somewhere, e.g. --message {{task}}");
+    }
+    if (a.cli !== "generic" && (a.output || a.summary || a.success || a.usage || a.models)) throw abad("output/summary/success/usage/models are for cli: generic");
+    if (a.cli !== "acp" && (a.allow || a.deny)) throw abad("allow/deny apply to ACP agents (other CLIs decide permissions themselves)");
+    for (const p of [...(a.allow ?? []), ...(a.deny ?? [])]) {
+      if (!/^[a-z_]+(:.+)?$/.test(p)) throw abad(`bad tool pattern "${p}" (use "kind" or "kind:glob", e.g. "execute:npm test*")`);
+    }
+    for (const [what, tpl] of [["summary", a.summary], ["success", a.success], ...Object.entries(a.usage ?? {})] as const) {
+      if (!tpl || ["last-paragraph", "all", "exit-code"].includes(tpl)) continue;
+      try {
+        evaluate(tpl, {});
+      } catch (e) {
+        throw abad(`${what}: ${(e as Error).message}`);
+      }
+    }
   }
   if (cfg.settings.resolver && !cfg.agents[cfg.settings.resolver]) {
     throw bad("settings.resolver", `settings.resolver "${cfg.settings.resolver}" is not an agent`);
@@ -470,15 +528,38 @@ export function loadConfig(root: string, opts: { sets?: string[]; env?: NodeJS.P
   return loadLayers(root, opts).config;
 }
 
+/** The default when an agent sets no permission: edits only. `yolo` must be chosen explicitly. */
+export const DEFAULT_PERMISSION = "accept-edits" as const;
+
 export function toProfile(a: RawAgent): AgentProfile {
   return {
     cli: a.cli,
     model: a.model,
-    permission: a.permission,
+    permission: a.permission ?? DEFAULT_PERMISSION,
     maxTurns: a.max_turns,
     timeoutMs: a.timeout,
     agent: a.agent,
+    command: a.cli === "acp" ? a.command : undefined,
+    generic:
+      a.cli === "generic"
+        ? { command: a.command!, output: a.output ?? "text", summary: a.summary ?? "last-paragraph", success: a.success ?? "exit-code", usage: a.usage }
+        : undefined,
+    env: a.env ? resolveEnv(a.env) : undefined,
+    allow: a.allow,
+    deny: a.deny,
+    sandbox: a.sandbox,
+    sandboxWritable: a.sandbox_writable,
   };
+}
+
+/** `env:NAME` values come from the environment, so secrets never live in config files. */
+export function resolveEnv(env: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(env).map(([k, v]) => {
+      const m = /^env:([A-Za-z_][A-Za-z0-9_]*)$/.exec(v);
+      return [k, m ? (process.env[m[1]!] ?? "") : v];
+    }),
+  );
 }
 
 export function getWorkflow(cfg: Config, name: string | undefined): Workflow & { name: string } {
