@@ -144,13 +144,14 @@ jobs:
           if [ "$HAVE_NPM_TOKEN" != true ]; then echo "NPM_TOKEN is not set; skipping npm publish"; exit 0; fi
           tag=latest
           case "$GITHUB_REF_NAME" in *-*) tag=next ;; esac
-          # Platform packages first, so the wrapper's optional dependencies resolve.
-          # ./ so npm reads a folder, not a GitHub "owner/repo".
-          for dir in ./npm/yxu-*; do
+          # Platform packages first, so the wrapper's optional dependencies resolve; a re-run skips
+          # what is already published. ./ so npm reads a folder, not a GitHub "owner/repo".
+          for dir in ./npm/yxu-* ./npm/yxu; do
+            name=$(node -p "require('$dir/package.json').name")
+            if npm view "$name@${GITHUB_REF_NAME#v}" version >/dev/null 2>&1; then echo "✓ $name already published"; continue; fi
             chmod +x "$dir"/bin/*
             npm publish "$dir" --access public --provenance --tag "$tag"
           done
-          npm publish ./npm/yxu --access public --provenance --tag "$tag"
 
   packaging:
     needs: github-release
