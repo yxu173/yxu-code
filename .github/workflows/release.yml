@@ -128,6 +128,8 @@ jobs:
       id-token: write
     env:
       NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # setup-node puts a placeholder in NODE_AUTH_TOKEN when the secret is missing, so check this.
+      HAVE_NPM_TOKEN: ${{ secrets.NPM_TOKEN != '' }}
     steps:
       - uses: actions/setup-node@v5
         with:
@@ -139,15 +141,16 @@ jobs:
           path: npm
       - name: publish (skipped without the NPM_TOKEN secret)
         run: |
-          if [ -z "$NODE_AUTH_TOKEN" ]; then echo "NPM_TOKEN is not set; skipping npm publish"; exit 0; fi
+          if [ "$HAVE_NPM_TOKEN" != true ]; then echo "NPM_TOKEN is not set; skipping npm publish"; exit 0; fi
           tag=latest
           case "$GITHUB_REF_NAME" in *-*) tag=next ;; esac
           # Platform packages first, so the wrapper's optional dependencies resolve.
-          for dir in npm/yxu-*; do
+          # ./ so npm reads a folder, not a GitHub "owner/repo".
+          for dir in ./npm/yxu-*; do
             chmod +x "$dir"/bin/*
             npm publish "$dir" --access public --provenance --tag "$tag"
           done
-          npm publish npm/yxu --access public --provenance --tag "$tag"
+          npm publish ./npm/yxu --access public --provenance --tag "$tag"
 
   packaging:
     needs: github-release
