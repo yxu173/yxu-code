@@ -28,9 +28,9 @@ export interface AgentChoice {
 /** The agents yxu knows how to set up, strongest last (the resolver and escalation target). */
 export const KNOWN_AGENTS: AgentChoice[] = [
   { name: "coder", cli: "commandcode", bin: "cmd", model: "deepseek/deepseek-v4-flash", description: "Fast, cheap coder for small well-scoped tasks." },
-  { name: "oc-coder", cli: "opencode", bin: "opencode", model: "opencode/deepseek-v4.1-flash-free", description: "OpenCode with a free DeepSeek model; good fallback coder." },
+  { name: "oc-coder", cli: "opencode", bin: "opencode", model: "opencode/deepseek-v4.1-flash-free", description: "OpenCode; a good fallback coder." },
   { name: "gemini", cli: "acp", bin: "gemini", command: ["gemini", "--experimental-acp"], description: "Gemini CLI over ACP; asks before running commands." },
-  { name: "claude-coder", cli: "claude", bin: "claude", model: "sonnet", description: "Claude Sonnet for tricky logic, or when the others fail twice." },
+  { name: "claude-coder", cli: "claude", bin: "claude", model: "sonnet", description: "Claude for tricky logic, or when the others fail twice." },
 ];
 
 export interface InitPlan {
