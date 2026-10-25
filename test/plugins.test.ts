@@ -35,8 +35,9 @@ beforeEach(() => {
   git(root, ...YXU_IDENTITY, "commit", "-qm", "init");
 });
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
-  rmSync(home, { recursive: true, force: true });
+  // Windows keeps a folder busy while a process (e.g. a panel refresh) still runs in it.
+  rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 const write = (file: string, text: string) => {
@@ -276,6 +277,7 @@ describe("packs with plugins, in the interface", () => {
     expect(s).toContain('Resolve the comment "TODO: handle errors" at src.py:2');
     await app.refreshPanels();
     expect(screen()).toContain("2 open · 1 handed off");
+    app.dispose();
   });
 
   test("a teammate's checkout: the pack's plugin waits until they approve it", async () => {
@@ -287,5 +289,7 @@ describe("packs with plugins, in the interface", () => {
     app.runCommand("/plugins approve");
     expect(screen()).toContain("Approved todos");
     expect(app.cfg.plugins!.commands.map((c) => c.command.name)).toEqual(["list", "fix"]);
+    await app.refreshPanels(); // let the panel's git grep finish before the repo is removed
+    app.dispose();
   });
 });
