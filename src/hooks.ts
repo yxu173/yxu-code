@@ -10,11 +10,14 @@
  *
  * Each command gets the event as JSON on stdin and YXU_EVENT in its environment. `{{…}}`
  * placeholders (e.g. {{task.files}}) are filled from the same data, shell-quoted.
+ * Plugin hooks (plugin-api.ts) run after the shell hooks, with the same data; a before_* plugin
+ * hook blocks by returning false or throwing.
  */
 import type { Config } from "./config.ts";
 import type { Session } from "./ops.ts";
 import type { RunOutcome } from "./orchestrator/run.ts";
 import { render } from "./expr.ts";
+import { pluginContext } from "./plugins.ts";
 import { guard } from "./trust.ts";
 import { runVerify, type VerifyResult } from "./verify.ts";
 
@@ -38,6 +41,32 @@ export interface HookOutcome {
 
 export function hooksFor(cfg: Config, event: HookEvent): string[] {
   return cfg.hooks?.[event] ?? [];
+}
+
+/** Whether anything (shell or plugin) listens for an event. */
+export function hasHooks(cfg: Config, event: HookEvent): boolean {
+  return hooksFor(cfg, event).length > 0 || Boolean(cfg.plugins?.hooks.some((h) => h.hooks[event]));
+}
+
+/** Plugin hooks for an event, in plugin load order. */
+async function runPluginHooks(cfg: Config, event: HookEvent, data: Record<string, unknown>, cwd: string): Promise<HookRun[]> {
+  const failed: HookRun[] = [];
+  for (const { plugin, hooks } of cfg.plugins?.hooks ?? []) {
+    const fn = hooks[event];
+    if (!fn) continue;
+    const started = Date.now();
+    const command = `plugin ${plugin}`;
+    try {
+      const r = await fn(pluginContext(plugin, cwd, cfg as unknown as Record<string, unknown>), { event, ...data });
+      if (r === false && BLOCKING.includes(event)) {
+        failed.push({ command, result: { ok: false, command, exitCode: null, durationMs: Date.now() - started, output: `plugin ${plugin} blocked ${event}`, timedOut: false } });
+      }
+    } catch (e) {
+      failed.push({ command, result: { ok: false, command, exitCode: null, durationMs: Date.now() - started, output: (e as Error).message, timedOut: false } });
+    }
+    if (failed.length && BLOCKING.includes(event)) break;
+  }
+  return failed;
 }
 
 export async function runHooks(
@@ -74,6 +103,9 @@ export async function runHooks(
       if (BLOCKING.includes(event)) return { ok: false, runs, failed };
     }
   }
+  const pluginFailed = await runPluginHooks(cfg, event, data, opts.cwd);
+  failed.push(...pluginFailed);
+  if (pluginFailed.length && BLOCKING.includes(event)) return { ok: false, runs, failed };
   return { ok: true, runs, failed };
 }
 
@@ -99,7 +131,7 @@ export async function withRunHooks(
   }
   const outcome = await run();
   const event: HookEvent = outcome.ok ? "on_complete" : "on_failure";
-  if (!hooksFor(cfg, event).length) return outcome;
+  if (!hasHooks(cfg, event)) return outcome;
   const tips = outcome.session.tips().map((t) => ({ id: t.taskId, agent: t.agent, files: t.filesChanged, branch: t.branch, summary: t.summary }));
   const after = await runHooks(
     cfg,

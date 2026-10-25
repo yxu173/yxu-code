@@ -1,4 +1,4 @@
-import { killGroup, start } from "./platform.ts";
+import { killGroup, shellArgvMerged, start } from "./platform.ts";
 export interface VerifyResult {
   ok: boolean;
   command: string;
@@ -22,7 +22,7 @@ export async function runVerify(
 ): Promise<VerifyResult> {
   const started = Date.now();
   // A subshell, so `2>&1` covers the whole command list.
-  const proc = start(["sh", "-c", `(${command}\n) 2>&1`], { cwd, detached: true, stdin, env: { ...process.env, CI: "1", NO_COLOR: "1", ...env } });
+  const proc = start(shellArgvMerged(command), { cwd, detached: true, stdin, env: { ...process.env, CI: "1", NO_COLOR: "1", ...env } });
   let timedOut = false;
   const kill = () => killGroup(proc.pid, "SIGKILL");
   const timer = setTimeout(() => {

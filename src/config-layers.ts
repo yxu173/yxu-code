@@ -20,11 +20,12 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { CONFIG_VERSION, DEFAULT_YAML, validateConfig, type Config } from "./config.ts";
 import { installedPacks, lockPath, MANIFEST, packData, readLock, writeLock, type PackScope } from "./packs.ts";
 import { cacheDir, fetchSource, integrity, parseSource } from "./sources.ts";
+import { loadPlugins } from "./plugins.ts";
 import { isTrusted } from "./trust.ts";
 
 export const LAYERS = ["defaults", "user-packs", "user", "packs", "project", "local", "env", "flags"] as const;
@@ -261,10 +262,17 @@ export function loadLayers(root: string, opts: LoadOptions = {}): Loaded {
       path.split(".").map((_, i, a) => a.slice(0, a.length - i).join(".")).find((p) => origins[p]);
     return hit ? fileOf(origins[hit] as string) : source;
   };
-  const config = validateConfig(raw, source, (path) => {
-    const wf = /^workflows\.([^.]+)/.exec(path)?.[1];
-    return wf && workflowFiles[wf] ? workflowFiles[wf] : where(path);
-  });
+  const registry = loadPlugins(root, env);
+  const config = validateConfig(
+    raw,
+    source,
+    (path) => {
+      const wf = /^workflows\.([^.]+)/.exec(path)?.[1];
+      return wf && workflowFiles[wf] ? workflowFiles[wf] : where(path);
+    },
+    { clis: [...registry.agents.keys()], orchestrators: [...registry.orchestrators.keys()] },
+  );
+  Object.defineProperty(config, "plugins", { value: registry, enumerable: false, writable: true });
   config.origins = origins as Record<string, string>;
   config.trusted = isTrusted(root, env);
   return { config, layers, raw, workflowFiles };
@@ -272,10 +280,11 @@ export function loadLayers(root: string, opts: LoadOptions = {}): Loaded {
 
 /** Paths under the repo are shown relative to it, the home directory as ~. */
 export function display(file: string, root: string): string {
+  const slash = (p: string) => p.split(sep).join("/");
   const rel = relative(root, file);
-  if (!rel.startsWith("..") && !rel.startsWith("/")) return rel;
+  if (!rel.startsWith("..") && !isAbsolute(rel)) return slash(rel);
   const home = homedir();
-  return file.startsWith(`${home}/`) ? `~/${file.slice(home.length + 1)}` : file;
+  return file.startsWith(home + sep) ? `~/${slash(file.slice(home.length + 1))}` : file;
 }
 
 /** The layer that decides a key's value, and the file behind it. */

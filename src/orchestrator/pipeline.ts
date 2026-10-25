@@ -8,7 +8,8 @@ import { newTaskId } from "../runner.ts";
 import type { TaskResult } from "../types.ts";
 import { guard } from "../trust.ts";
 import { runVerify } from "../verify.ts";
-import { askOrchestrator, sessionPath, type OrchestratorRender, type RunOutcome } from "./run.ts";
+import { askProvider, type AskFn } from "./providers.ts";
+import { sessionPath, type OrchestratorRender, type RunOutcome } from "./run.ts";
 
 const PlanOutput = z.object({
   summary: z.string().describe("One paragraph: the approach."),
@@ -104,7 +105,7 @@ export interface PipelineOptions {
   /** Ask the user at a gate step; resolve true to continue. Without it, gates fail. */
   gate?: (message: string, stepId: string) => Promise<boolean>;
   /** Override the orchestrator model call (tests). */
-  askImpl?: typeof askOrchestrator;
+  askImpl?: AskFn;
   /** Reuse a task session across turns (interactive UIs). */
   session?: Session;
 }
@@ -127,10 +128,10 @@ export async function runPipeline(opts: PipelineOptions): Promise<RunOutcome> {
     .map((n) => `- ${n}: ${cfg.agents[n]!.cli}/${cfg.agents[n]!.model ?? "default"}${cfg.agents[n]!.description ? ` — ${cfg.agents[n]!.description}` : ""}`)
     .join("\n");
 
-  const ask = async <T extends z.ZodType>(system: string, user: string, schema: T) => {
+  const ask = async <T extends z.ZodType>(system: string, user: string, schema: T, head?: string) => {
     const budget = cfg.orchestrator.max_budget_usd;
     if (budget !== undefined && costUsd >= budget) throw new StepFailed(`orchestrator budget $${budget} used up`);
-    const r = await (opts.askImpl ?? askOrchestrator)({ cfg, root, abort, system, prompt: user, schema, render: ui });
+    const r = await (opts.askImpl ?? askProvider)({ cfg, root, abort, system, prompt: user, schema, render: ui, head });
     costUsd += r.costUsd;
     return r.value;
   };
@@ -297,6 +298,7 @@ ${wfInstructions}${step.instructions ? `\nStep instructions:\n${render(step.inst
 ${wfInstructions}${step.instructions ? `\nStep instructions:\n${render(step.instructions, scope)}` : ""}`,
             `Goal: ${goal}\n\nVerification:\n${verifyNote}\n\nCumulative diff:\n${diff.length > max ? `${diff.slice(0, max)}\n… [truncated]` : diff}`,
             ReviewOutput,
+            cur.head,
           );
           ui.assistantText(`review round ${round}: ${review.approved ? "approved" : "changes requested"} — ${review.summary}`);
           if (review.approved || !review.fixes.length) {

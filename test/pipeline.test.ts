@@ -6,6 +6,7 @@ import { DEFAULT_YAML, parseConfig, type Config } from "../src/config.ts";
 import { git, worktreeFor, YXU_IDENTITY } from "../src/git.ts";
 import { renderTemplate, runPipeline } from "../src/orchestrator/pipeline.ts";
 import type { askOrchestrator, OrchestratorRender } from "../src/orchestrator/run.ts";
+import { fakeCli, pathWith } from "./helpers.ts";
 
 let root: string;
 let bin: string;
@@ -33,9 +34,8 @@ beforeEach(() => {
   git(root, "add", ".");
   git(root, ...YXU_IDENTITY, "commit", "-qm", "init");
   bin = mkdtempSync(join(tmpdir(), "yxu-bin-"));
-  writeFileSync(join(bin, "opencode"), FAKE_AGENT);
-  chmodSync(join(bin, "opencode"), 0o755);
-  process.env.PATH = `${bin}:${origPath}`;
+  fakeCli(bin, "opencode", FAKE_AGENT);
+  process.env.PATH = pathWith(bin, origPath);
 });
 
 afterEach(() => {

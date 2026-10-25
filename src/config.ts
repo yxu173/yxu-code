@@ -15,12 +15,14 @@ export function parseDuration(v: string | number): number {
   return n * unit;
 }
 
+export const BUILTIN_CLIS = ["commandcode", "opencode", "claude", "acp", "generic"] as const;
+
 const Duration = z.union([z.string(), z.number()]).transform(parseDuration);
 
 const AgentSchema = z.object({
   cli: z
-    .enum(["commandcode", "opencode", "claude", "acp", "generic"])
-    .describe("commandcode, opencode, claude (built in); acp (any Agent Client Protocol agent); generic (any CLI, see command)"),
+    .union([z.enum(BUILTIN_CLIS), z.string().regex(/^[a-z][a-z0-9-]*$/, "cli names are lowercase words")])
+    .describe("commandcode, opencode, claude (built in); acp (any Agent Client Protocol agent); generic (any CLI, see command); or a cli added by a plugin"),
   command: z
     .array(z.string())
     .min(1)
@@ -241,13 +243,18 @@ export const ConfigSchema = z.object({
   orchestrator: z
     .object({
       model: z.string().default("opus").describe("Claude model that plans, delegates and reviews"),
+      provider: z
+        .string()
+        .default("claude")
+        .describe("Who answers pipeline plan and review steps: claude (default), agent (orchestrator.agent), or an orchestrator added by a plugin. Auto workflows need claude"),
+      agent: z.string().optional().describe("provider: agent — the agent that plans and reviews (read-only, in its own worktree)"),
       effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional().describe("Reasoning effort for the orchestrator"),
       max_budget_usd: z.number().positive().optional().describe("Stop the orchestrator when a run spends more than this"),
       max_turns: z.number().int().positive().optional().describe("Orchestrator turn limit per run"),
       /** Load the user's global Claude settings (plugins, hooks, MCP servers). Off: much cheaper. */
       user_settings: z.boolean().default(false).describe("Load your global Claude settings, plugins and MCP servers (costly)"),
     })
-    .default({ model: "opus", user_settings: false }),
+    .default({ model: "opus", provider: "claude", user_settings: false }),
   agents: z.record(z.string(), AgentSchema).describe("Local agent CLIs the orchestrator can delegate to"),
   workflows: z.record(z.string(), WorkflowSchema).default({}).describe("How the orchestrator works: auto, or a fixed pipeline of steps"),
   settings: z
@@ -284,9 +291,9 @@ export const ConfigSchema = z.object({
       keys: z.record(z.string(), z.string()).default({}).describe('Rebind interface keys, e.g. { panel: ctrl+b } (see `yxu keys`)'),
       panel: z.boolean().default(true).describe("Open the side panel at start"),
       panel_sections: z
-        .array(z.enum(["context", "agents", "tasks", "cost"]))
+        .array(z.union([z.enum(["context", "agents", "tasks", "cost"]), z.string().regex(/^[a-z][a-z0-9-]*:.+$/, 'plugin sections are "<plugin>:<title>"')]))
         .default(["context", "agents", "tasks", "cost"])
-        .describe("Which panel sections to show, in order"),
+        .describe('Which panel sections to show, in order; plugin sections are "<plugin>:<title>" (shown after these unless listed)'),
       footer: z.boolean().default(true).describe("Show the key hints line"),
     })
     .default({ theme: "instrument", keys: {}, panel: true, panel_sections: ["context", "agents", "tasks", "cost"], footer: true })
@@ -296,6 +303,8 @@ export const ConfigSchema = z.object({
 export type RawAgent = z.infer<typeof AgentSchema>;
 export type Workflow = z.infer<typeof WorkflowSchema>;
 export type Config = z.infer<typeof ConfigSchema> & {
+  /** Plugins loaded for this repo (non-enumerable; filled by loadLayers). */
+  plugins?: import("./plugins.ts").PluginRegistry;
   /** Human-readable list of the files that make up this config. */
   source: string;
   /** Which layer set each value ("orchestrator.model" → "local"); filled by loadLayers. */
@@ -403,8 +412,14 @@ settings:
   verify: npm test        # command that checks a result (used by verify steps and the verify tool)
 `;
 
+/** Agent clis and orchestrators that plugins add (for validation). */
+export interface Extensions {
+  clis: string[];
+  orchestrators: string[];
+}
+
 /** Validate a merged raw config. `where(path)` names the file a bad value came from. */
-export function validateConfig(raw: unknown, source: string, where: (path: string) => string = () => source): Config {
+export function validateConfig(raw: unknown, source: string, where: (path: string) => string = () => source, ext: Extensions = { clis: [], orchestrators: [] }): Config {
   const parsed = ConfigSchema.safeParse(raw ?? {});
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => {
@@ -425,8 +440,19 @@ export function validateConfig(raw: unknown, source: string, where: (path: strin
   } catch (e) {
     throw bad("ui.keys", (e as Error).message);
   }
+  const provider = cfg.orchestrator.provider;
+  if (provider !== "claude" && provider !== "agent" && !ext.orchestrators.includes(provider)) {
+    throw bad("orchestrator.provider", `orchestrator.provider "${provider}" is not claude, agent${ext.orchestrators.length ? `, ${ext.orchestrators.join(", ")}` : ""} (plugins can add more; see \`yxu plugins\`)`);
+  }
+  if (provider === "agent") {
+    if (!cfg.orchestrator.agent) throw bad("orchestrator.agent", "orchestrator.provider: agent needs orchestrator.agent (the agent that plans and reviews)");
+    if (!cfg.agents[cfg.orchestrator.agent]) throw bad("orchestrator.agent", `orchestrator.agent "${cfg.orchestrator.agent}" is not an agent`);
+  }
   for (const [name, a] of Object.entries(cfg.agents)) {
     const abad = (msg: string) => bad(`agents.${name}`, `agent "${name}": ${msg}`);
+    if (!(BUILTIN_CLIS as readonly string[]).includes(a.cli) && !ext.clis.includes(a.cli)) {
+      throw abad(`unknown cli "${a.cli}" (built in: ${BUILTIN_CLIS.join(", ")}${ext.clis.length ? `; from plugins: ${ext.clis.join(", ")}` : ""}). If a plugin adds it, check \`yxu plugins\`: it may wait for approval`);
+    }
     if ((a.cli === "acp" || a.cli === "generic") && !a.command) throw abad(`cli: ${a.cli} needs \`command\``);
     if (a.cli !== "acp" && a.cli !== "generic" && a.command) throw abad(`\`command\` is only for cli: acp or generic`);
     if (a.cli === "generic" && !a.command!.some((x) => x.includes("{{task}}") || x.includes("{{ task }}"))) {
@@ -583,6 +609,12 @@ export function resolveEnv(env: Record<string, string>): Record<string, string> 
       return [k, m ? (process.env[m[1]!] ?? "") : v];
     }),
   );
+}
+
+/** Who orchestrates, for display: "opus", "agent oc", or a plugin orchestrator's name. */
+export function orchestratorLabel(cfg: Config): string {
+  const p = cfg.orchestrator.provider ?? "claude";
+  return p === "claude" ? cfg.orchestrator.model : p === "agent" ? `agent ${cfg.orchestrator.agent}` : `${p} (plugin)`;
 }
 
 export function getWorkflow(cfg: Config, name: string | undefined): Workflow & { name: string } {

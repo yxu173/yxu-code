@@ -1,6 +1,7 @@
 /**
  * Build release artifacts for every supported platform:
- *   dist/release/yxu-<os>-<arch>.tar.gz   (binary named `yxu`) + checksums.txt
+ *   dist/release/yxu-<os>-<arch>.tar.gz   (binary named `yxu`; Windows: yxu-windows-x64.zip with yxu.exe)
+ *                                          + checksums.txt
  *   dist/npm/<package>/                    npm wrapper `yxu` + one package per platform
  *
  * usage: bun scripts/build-release.ts [--version X.Y.Z] [--only linux-x64,...]
@@ -19,6 +20,7 @@ export const TARGETS = [
   { name: "linux-arm64", bun: "bun-linux-arm64", os: "linux", cpu: "arm64" },
   { name: "darwin-x64", bun: "bun-darwin-x64-baseline", os: "darwin", cpu: "x64" },
   { name: "darwin-arm64", bun: "bun-darwin-arm64", os: "darwin", cpu: "arm64" },
+  { name: "windows-x64", bun: "bun-windows-x64-baseline", os: "win32", cpu: "x64" },
 ] as const;
 
 const { values } = parseArgs({ options: { version: { type: "string" }, only: { type: "string" } } });
@@ -45,22 +47,25 @@ for (const t of targets) {
   const stage = join(out, "stage", t.name);
   rmSync(stage, { recursive: true, force: true });
   mkdirSync(stage, { recursive: true });
-  const bin = join(stage, "yxu");
+  const win = t.os === "win32";
+  const exe = win ? "yxu.exe" : "yxu";
+  const bin = join(stage, exe);
   console.log(`· ${t.name}`);
   sh(["bun", "build", "--compile", "--minify", "--sourcemap", `--target=${t.bun}`, "src/cli.ts", "--outfile", bin]);
   copyFileSync(join(ROOT, "LICENSE"), join(stage, "LICENSE"));
   copyFileSync(join(ROOT, "README.md"), join(stage, "README.md"));
 
-  const archive = `yxu-${t.name}.tar.gz`;
-  sh(["tar", "-czf", join(out, "release", archive), "-C", stage, "yxu", "LICENSE", "README.md"]);
+  const archive = win ? `yxu-${t.name}.zip` : `yxu-${t.name}.tar.gz`;
+  if (win) sh(["zip", "-q", "-j", join(out, "release", archive), bin, join(stage, "LICENSE"), join(stage, "README.md")]);
+  else sh(["tar", "-czf", join(out, "release", archive), "-C", stage, "yxu", "LICENSE", "README.md"]);
   const hash = createHash("sha256").update(readFileSync(join(out, "release", archive))).digest("hex");
   sums.push(`${hash}  ${archive}`);
 
   // npm: one package per platform holding just the binary.
   const dir = join(out, "npm", `yxu-${t.name}`);
   mkdirSync(join(dir, "bin"), { recursive: true });
-  copyFileSync(bin, join(dir, "bin", "yxu"));
-  chmodSync(join(dir, "bin", "yxu"), 0o755);
+  copyFileSync(bin, join(dir, "bin", exe));
+  chmodSync(join(dir, "bin", exe), 0o755);
   copyFileSync(join(ROOT, "LICENSE"), join(dir, "LICENSE"));
   writeFileSync(
     join(dir, "package.json"),
@@ -73,7 +78,7 @@ for (const t of targets) {
         repository: pkg.repository,
         os: [t.os],
         cpu: [t.cpu],
-        files: ["bin/yxu", "LICENSE"],
+        files: [`bin/${exe}`, "LICENSE"],
       },
       null,
       2,
@@ -86,6 +91,12 @@ writeFileSync(join(out, "release", "checksums.txt"), sums.join("\n") + "\n");
 const wrapper = join(out, "npm", "yxu");
 mkdirSync(join(wrapper, "bin"), { recursive: true });
 copyFileSync(join(ROOT, "npm", "yxu", "bin", "yxu.js"), join(wrapper, "bin", "yxu.js"));
+// Types for plugin authors: `import type { Plugin } from "yxu/plugin"`.
+sh(["bunx", "tsc", "src/plugin-api.ts", "--declaration", "--emitDeclarationOnly", "--allowImportingTsExtensions", "--skipLibCheck", "--target", "ES2022", "--module", "ESNext", "--moduleResolution", "Bundler", "--outDir", join(wrapper, "types")]);
+for (const f of ["plugin-api.d.ts", "types.d.ts"]) {
+  const file = join(wrapper, "types", f);
+  writeFileSync(file, readFileSync(file, "utf8").replace(/from "\.\/(\w[\w-]*)\.ts"/g, 'from "./$1.js"'));
+}
 copyFileSync(join(ROOT, "LICENSE"), join(wrapper, "LICENSE"));
 copyFileSync(join(ROOT, "README.md"), join(wrapper, "README.md"));
 writeFileSync(
@@ -100,7 +111,8 @@ writeFileSync(
       homepage: "https://github.com/yxu173/yxu-code#readme",
       keywords: ["claude", "claude-code", "agents", "orchestrator", "cli", "opencode", "multi-agent"],
       bin: { yxu: "bin/yxu.js" },
-      files: ["bin/yxu.js", "LICENSE", "README.md"],
+      exports: { "./plugin": { types: "./types/plugin-api.d.ts" }, "./package.json": "./package.json" },
+      files: ["bin/yxu.js", "types", "LICENSE", "README.md"],
       engines: { node: ">=18" },
       optionalDependencies: Object.fromEntries(TARGETS.map((t) => [`yxu-${t.name}`, version])),
     },

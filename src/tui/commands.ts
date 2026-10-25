@@ -155,6 +155,20 @@ export const COMMANDS: Command[] = [
     run: (app) => app.reloadUserCommands(true),
   },
   {
+    name: "plugins",
+    usage: "[approve [name]|revoke <name>]",
+    description: "Plugins: what they add, and approving the ones from this repo",
+    group: "session",
+    complete: (app, i) =>
+      i === 0
+        ? [
+            { value: "approve", description: "load this repo's plugins that wait for approval" },
+            { value: "revoke", description: "stop loading a plugin from this repo" },
+          ]
+        : (app.cfg.plugins?.entries ?? []).filter((e) => e.scope === "project").map((e) => ({ value: e.plugin?.name ?? e.id, description: e.status })),
+    run: (app, [sub, name]) => (sub === "approve" ? app.approvePlugins(name) : sub === "revoke" ? app.revokePlugin(name) : app.listPlugins()),
+  },
+  {
     name: "packs",
     description: "Installed packs and what they add (install with `yxu add` in a shell)",
     group: "session",
@@ -488,7 +502,16 @@ export const COMMANDS: Command[] = [
 
 /** Built-in commands plus the user's own (.yxu/commands), as one list. */
 export function allCommands(app?: App): Command[] {
-  return [...COMMANDS, ...(app?.userCommands ?? []).map(customCommand)];
+  const fromPlugins = (app?.cfg.plugins?.commands ?? []).map(
+    ({ plugin, command }): Command => ({
+      name: `${plugin}:${command.name}`,
+      usage: command.usage,
+      description: `${command.description ?? ""} (plugin ${plugin})`.trim(),
+      group: "custom",
+      run: (a, args) => a.runPluginCommand(plugin, command, args),
+    }),
+  );
+  return [...COMMANDS, ...(app?.userCommands ?? []).map(customCommand), ...fromPlugins];
 }
 
 function customCommand(c: UserCommand): Command {

@@ -6,6 +6,7 @@ import { combineTasks, readTaskRecord, taskAncestors } from "../src/combine.ts";
 import { collectChanges, createWorktree, git, YXU_IDENTITY } from "../src/git.ts";
 import { newTaskId, Semaphore, writeTaskRecord } from "../src/runner.ts";
 import { emptyUsage } from "../src/types.ts";
+import { fakeCli, pathWith } from "./helpers.ts";
 
 let root: string;
 let bin: string;
@@ -45,9 +46,8 @@ done
 echo '{"type":"text","sessionID":"ses_fake","part":{"type":"text","text":"resolved"}}'
 echo '{"type":"step_finish","sessionID":"ses_fake","part":{"reason":"stop","tokens":{"input":1,"output":1},"cost":0}}'
 `;
-  writeFileSync(join(bin, "opencode"), script);
-  chmodSync(join(bin, "opencode"), 0o755);
-  process.env.PATH = `${bin}:${origPath}`;
+  fakeCli(bin, "opencode", script);
+  process.env.PATH = pathWith(bin, origPath);
 });
 
 afterEach(() => {

@@ -1,7 +1,7 @@
 /** Agent CLIs with a built-in adapter. */
 export type CliName = "commandcode" | "opencode" | "claude";
 /** Any agent: a built-in CLI, an ACP agent, or a generic CLI described in config. */
-export type AgentKind = CliName | "acp" | "generic";
+export type AgentKind = CliName | "acp" | "generic" | (string & {});
 
 /** How a generic CLI is run and read (agents.<name> with cli: generic). */
 export interface GenericSpec {

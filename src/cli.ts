@@ -2,7 +2,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { getWorkflow, loadConfig, toProfile, type Config } from "./config.ts";
+import { getWorkflow, orchestratorLabel, loadConfig, toProfile, type Config } from "./config.ts";
 import { loadLayers } from "./config-layers.ts";
 import { buildContextPrompt, compactSettings, formatTokens, settingSources } from "./context.ts";
 import { applyWithHooks, discardTask } from "./actions.ts";
@@ -16,6 +16,7 @@ import { claudeExecutable, isCompiled, runAttached, runSync, VERSION, which } fr
 import { update } from "./update.ts";
 import { withRunHooks } from "./hooks.ts";
 import { needsTrust } from "./trust.ts";
+import { pluginContext, setPluginHost } from "./plugins.ts";
 import { sandboxAvailable } from "./sandbox.ts";
 import { describe, type Answer, type Asker } from "./permissions.ts";
 import { commandUsage, expandCommand, loadUserCommands } from "./user-commands.ts";
@@ -51,6 +52,8 @@ Usage:
   yxu add <source> [--user] [--as name] [--yes]
                             install a pack: a starter pack (python, node, rust, go),
                             github:owner/repo[/path][@ref], a git URL, or ./folder
+  yxu plugins [list|approve [name...]|revoke <name>]
+                            plugins (code) found here; this repo's load once you approve them
   yxu packs [list [-v]|update [name...]|remove <name>|install]
                             installed packs, pinned in yxu.lock (install: restore from the lock)
   yxu run "/<command> [args]"   run one of your commands (.yxu/commands/<command>.md)
@@ -228,6 +231,20 @@ async function run(argv: string[]) {
   // `yxu run "/add-tests src/a.ts"` runs a custom command from .yxu/commands.
   if (goal.startsWith("/")) {
     const [name = "", ...args] = goal.slice(1).split(/\s+/);
+    const pc = cfg.plugins?.commands.find((x) => `${x.plugin}:${x.command.name}` === name.toLowerCase());
+    if (pc) {
+      // A plugin's command: it may print notes and start runs of its own.
+      setPluginHost({
+        note: (m) => console.log(m),
+        run: async (g, o = {}) => {
+          const wf = getWorkflow(cfg, o.workflow ?? values.workflow);
+          const outcome = await execute(g, wf, { ...inputs, ...o.inputs });
+          return { ok: outcome.ok, result: outcome.finalText };
+        },
+      });
+      await pc.command.run(pluginContext(pc.plugin, root, cfg as unknown as Record<string, unknown>), args);
+      process.exit(0);
+    }
     const { commands, errors } = loadUserCommands(root, cfg);
     const c = commands.find((x) => x.name === name.toLowerCase());
     if (!c) die(`no custom command /${name}${errors.length ? `\n${errors.join("\n")}` : ""} (see: yxu commands)`);
@@ -245,36 +262,40 @@ async function run(argv: string[]) {
   }
   if (!goal && workflow.mode !== "pipeline") die('missing goal, e.g. yxu run "add a --verbose flag"');
   if (Object.keys(inputs).length && workflow.mode !== "pipeline") die(`--input is for pipeline workflows; "${workflow.name}" is ${workflow.mode}`);
-
-  const ac = new AbortController();
-  process.once("SIGINT", () => {
-    console.error("\n✗ cancelling… (Ctrl-C again to force quit)");
-    ac.abort();
-    killAllSubagents();
-    process.once("SIGINT", () => process.exit(130)); // exit handler SIGKILLs any subagent left
-  });
-
-  console.log(
-    `${bold("yxu")} ${dim(`orchestrator ${cfg.orchestrator.model} · ${workflow.mode} workflow "${workflow.name}" · config ${cfg.source}`)}\n`,
-  );
-
-  const r = makeRenderer(cfg);
-  const session = new Session();
-  const outcome = await withRunHooks(cfg, root, { goal, workflow: workflow.name, session, signal: ac.signal }, () =>
-    workflow.mode === "pipeline"
-      ? runPipeline({ goal, cfg, workflow, root, abort: ac, render: r.render, inputs, gate: cliGate(values.yes), session })
-      : runOrchestrator({ goal, cfg, workflow, root, abort: ac, render: r.render, session }),
-  );
-
-  // The final report is usually the last assistant message, already printed above.
-  if (outcome.finalText.trim() !== r.lastText()) console.log(`${bold("─── result ───")}\n${outcome.finalText}\n`);
-  else console.log(bold("─── done ───"));
-  const cost = `orchestrator $${outcome.costUsd.toFixed(4)} · subagents $${r.subagentCost().toFixed(4)}`;
-  console.log(dim(`${outcome.session.tasks.size} task(s) · ${cost} · ${outcome.runId}`));
-  printApplyHints(
-    outcome.session.tips().map((t) => ({ taskId: t.taskId, agent: t.agent, includes: outcome.session.ancestorCount(t.taskId) })),
-  );
+  const outcome = await execute(goal, workflow, inputs);
   process.exit(outcome.ok ? 0 : 2);
+
+  async function execute(goal: string, workflow: ReturnType<typeof getWorkflow>, inputs: Record<string, string>) {
+    const ac = new AbortController();
+    process.once("SIGINT", () => {
+      console.error("\n✗ cancelling… (Ctrl-C again to force quit)");
+      ac.abort();
+      killAllSubagents();
+      process.once("SIGINT", () => process.exit(130)); // exit handler SIGKILLs any subagent left
+    });
+
+    console.log(
+      `${bold("yxu")} ${dim(`orchestrator ${orchestratorLabel(cfg)} · ${workflow.mode} workflow "${workflow.name}" · config ${cfg.source}`)}\n`,
+    );
+
+    const r = makeRenderer(cfg);
+    const session = new Session();
+    const outcome = await withRunHooks(cfg, root, { goal, workflow: workflow.name, session, signal: ac.signal }, () =>
+      workflow.mode === "pipeline"
+        ? runPipeline({ goal, cfg, workflow, root, abort: ac, render: r.render, inputs, gate: cliGate(values.yes), session })
+        : runOrchestrator({ goal, cfg, workflow, root, abort: ac, render: r.render, session }),
+    );
+
+    // The final report is usually the last assistant message, already printed above.
+    if (outcome.finalText.trim() !== r.lastText()) console.log(`${bold("─── result ───")}\n${outcome.finalText}\n`);
+    else console.log(bold("─── done ───"));
+    const cost = `orchestrator $${outcome.costUsd.toFixed(4)} · subagents $${r.subagentCost().toFixed(4)}`;
+    console.log(dim(`${outcome.session.tasks.size} task(s) · ${cost} · ${outcome.runId}`));
+    printApplyHints(
+      outcome.session.tips().map((t) => ({ taskId: t.taskId, agent: t.agent, includes: outcome.session.ancestorCount(t.taskId) })),
+    );
+    return outcome;
+  }
 }
 
 /** Agent tool approvals on the command line: a terminal asks; without one, they are refused. */
@@ -612,12 +633,21 @@ function contextInfo() {
 async function doctor() {
   let bad = 0;
   console.log(`  yxu          ${VERSION}${isCompiled() ? " (binary)" : ""}  ${process.platform}-${process.arch}`);
+  let provider = "claude";
+  try {
+    const c = loadConfig(repoRoot(process.cwd()));
+    provider = c.orchestrator.provider ?? "claude";
+    if (provider === "agent") console.log(`✓ orchestrator agent ${c.orchestrator.agent} answers pipeline plan and review steps (auto workflows need claude)`);
+    else if (provider !== "claude") console.log(`✓ orchestrator ${provider} (plugin ${c.plugins?.orchestrators.get(provider)?.plugin}) answers pipeline plan and review steps (auto workflows need claude)`);
+  } catch {
+    // the config check below reports it
+  }
   try {
     const engine = claudeExecutable();
-    console.log(`✓ orchestrator ${engine ? `Claude Code at ${engine}` : "Claude Code engine bundled with the Agent SDK"}`);
+    console.log(`${provider === "claude" ? "✓ orchestrator" : "✓ claude     "} ${engine ? `Claude Code at ${engine}` : "Claude Code engine bundled with the Agent SDK"}`);
   } catch (e) {
-    bad++;
-    console.log(`✗ orchestrator ${(e as Error).message}`);
+    if (provider === "claude") bad++;
+    console.log(`${provider === "claude" ? "✗" : "!"} orchestrator ${(e as Error).message}`);
   }
   for (const cli of CLIS) {
     const bin = BINARIES[cli];
@@ -651,6 +681,14 @@ async function doctor() {
         bad++;
         console.log(`✗ agent        ${name}: \`${a.command[0]}\` not found on PATH`);
       }
+    }
+    for (const e of cfg.plugins?.entries ?? []) {
+      const what = `${e.plugin?.name ?? e.id} (${e.scope}${e.pack ? `, pack ${e.pack}` : ""})`;
+      if (e.status === "loaded") console.log(`✓ plugin       ${what}`);
+      else if (e.status === "error") {
+        bad++;
+        console.log(`✗ plugin       ${what}: ${e.error}`);
+      } else console.log(`! plugin       ${what} ${e.status === "changed" ? "changed since you approved it" : "waits for approval"}: \`yxu plugins approve\``);
     }
     const { packStatus } = await import("./pack-install.ts");
     for (const p of packStatus(repoRoot(process.cwd()))) {
@@ -719,6 +757,10 @@ try {
       const { addCommand } = await import("./packs-cli.ts");
       process.exit(await addCommand(rest));
     }
+    case "plugins": {
+      const { pluginsCommand } = await import("./plugins-cli.ts");
+      process.exit(pluginsCommand(rest));
+    }
     case "packs": {
       const { packsCommand } = await import("./packs-cli.ts");
       process.exit(await packsCommand(rest));
@@ -769,9 +811,12 @@ try {
     }
     case "commands": {
       const root = repoRoot(process.cwd());
-      const { commands, errors } = loadUserCommands(root, loadConfig(root));
-      if (!commands.length && !errors.length) console.log("no custom commands; add Markdown files to .yxu/commands/ or ~/.config/yxu/commands/");
+      const ccfg = loadConfig(root);
+      const { commands, errors } = loadUserCommands(root, ccfg);
+      const fromPlugins = ccfg.plugins?.commands ?? [];
+      if (!commands.length && !errors.length && !fromPlugins.length) console.log("no custom commands; add Markdown files to .yxu/commands/ or ~/.config/yxu/commands/");
       for (const c of commands) console.log(`/${c.name}${c.args.length ? ` ${commandUsage(c)}` : ""}  ${dim(`${c.description} · ${c.kind} · ${c.scope}`)}`);
+      for (const { plugin, command } of fromPlugins) console.log(`/${plugin}:${command.name}${command.usage ? ` ${command.usage}` : ""}  ${dim(`${command.description ?? ""} · plugin`)}`);
       for (const e of errors) console.log(`✗ ${e}`);
       process.exit(errors.length ? 1 : 0);
     }

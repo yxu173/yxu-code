@@ -1,0 +1,7 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/yxu173/yxu-code/main/schema/yxu-pack.schema.json
+# An example third-party pack whose plugin adds a panel section and commands.
+# Install it with: yxu add github:yxu173/yxu-code/examples/todos
+name: todos
+version: 0.1.0
+description: TODO and FIXME comments in the side panel, and /todos:fix to hand one to an agent.
+homepage: https://github.com/yxu173/yxu-code/tree/main/examples/todos

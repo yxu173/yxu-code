@@ -22,6 +22,7 @@ import {
   type PackScope,
 } from "./packs.ts";
 import { VERSION } from "./platform.ts";
+import { pluginsIn, setApproval } from "./plugins.ts";
 import { copyInto, fetchSource, integrity, listFiles, parseSource, type Source } from "./sources.ts";
 
 export interface PackIO {
@@ -42,6 +43,7 @@ export function describePack(pack: InstalledPack, from: string, into: string): {
   if (c.commands.length) lines.push(`  commands  ${c.commands.join(" ")}`);
   if (c.prompts.length) lines.push(`  prompts   ${c.prompts.join(" ")} (appended to yxu's prompts)`);
   if (c.themes.length) lines.push(`  themes    ${c.themes.join(" ")}`);
+  if (c.plugins.length) lines.push(`  plugins   ${c.plugins.join(" ")} (code)`);
   if (c.config.length) lines.push(`  config    ${c.config.join(", ")}`);
   return { lines, runs: c.runs };
 }
@@ -108,6 +110,10 @@ export async function addPack(root: string, spec: string, o: AddOptions, io: Pac
     } else {
       for (const l of lines) io.print(l);
       if (runs.length) io.print(`  can run   ${runs.join("\n            ")}`);
+    }
+    // You saw and confirmed the pack's plugins, so they're approved at this code.
+    for (const p of pluginsIn(join(got.path, "plugins"))) {
+      if (o.scope === "project") setApproval(join(packsDir(o.scope, root), name, "plugins", p.path.slice(join(got.path, "plugins").length + 1)), true, p.path);
     }
     place(root, o.scope, name, got.path, { source: lockedSource(src, root, o.scope), ref: src.kind === "git" ? src.ref : undefined, commit: got.commit, version: manifest.version });
     if (existsSync(join(packsDir(other, root), name))) io.print(io.dim(`note: a ${other} pack named ${name} is also installed; both apply, the project one last`));
@@ -176,6 +182,7 @@ export function updatePacks(root: string, names: string[], io: PackIO, opts: { s
       const ver = entry.version !== manifest.version ? ` ${entry.version ?? "?"} → ${manifest.version ?? "?"}` : "";
       const commit = got.commit && got.commit !== entry.commit ? ` (${entry.commit?.slice(0, 10) ?? "?"} → ${got.commit.slice(0, 10)})` : "";
       io.print(`✓ updated ${name}${ver}${commit}`);
+      if (diff.some((d) => d.slice(2).startsWith("plugins/")) && scope === "project") io.print(`! its plugins changed: read them, then \`yxu plugins approve\``);
       for (const d of diff.slice(0, 20)) io.print(io.dim(`    ${d}`));
       if (diff.length > 20) io.print(io.dim(`    … ${diff.length - 20} more`));
     } finally {

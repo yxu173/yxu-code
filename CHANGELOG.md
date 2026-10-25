@@ -3,7 +3,10 @@
 All notable changes are listed here. The project uses [semantic versioning](https://semver.org);
 before 1.0, minor versions may change the config format (with migration notes here).
 
-## Unreleased
+## 0.1.0 (2026-10-25)
+
+The first public release: everything below is customizable from files, shareable as packs, and
+extensible with plugins.
 
 ### Added
 - Layered configuration: built-in defaults → `~/.config/yxu/config.yaml` → `yxu.yaml` →
@@ -38,6 +41,19 @@ before 1.0, minor versions may change the config format (with migration notes he
 - Model lists for ACP and generic agents.
 - A warning when an agent writes outside its worktree.
 
+- Packs: `yxu add <python|node|rust|go|github:owner/repo[/path][@ref]|git URL|./folder> [--user]`,
+  `yxu packs list|update|remove|install`, pinned by commit and content hash in `yxu.lock`;
+  namespaced workflows and commands (`/python:add-tests`); `/packs`.
+- `extends:` for shared config files (remote ones cached and pinned in `yxu.lock`).
+- Starter packs `python`, `node`, `rust`, `go`, built into the binary.
+- `yxu init` is a wizard: detects agent CLIs, picks models, suggests a starter pack.
+- `agent: default` and `settings.default_agent`, so shared workflows don't need agent names.
+- Plugin API v1 (TypeScript): commands, side-panel sections, hooks, agent kinds and
+  orchestrators; repo and pack plugins load only after `yxu plugins approve`, pinned to their code.
+- `orchestrator.provider: claude | agent | <plugin>`: pipelines can run without Claude.
+- Native Windows (x64): release zip, npm package, Windows CI.
+- JSON Schema for `yxu-pack.yaml`; `examples/todos`, a pack with a plugin.
+
 ### Changed
 - **Agents default to `accept-edits`**; `yolo` must be set per agent (`yxu doctor` warns about it).
 - Agent processes get `PWD` set to their worktree (some CLIs used yxu's directory instead).
@@ -52,6 +68,7 @@ before 1.0, minor versions may change the config format (with migration notes he
 - `yxu update [--check] [--version vX.Y.Z]`: checksum-verified self-update for release binaries.
 - Homebrew formula and AUR `yxu-bin` package, generated and published by the release workflow.
 - All process spawning goes through `src/platform.ts`.
+- Appended subagent-preamble prompts now go before `TASK:` instead of after it.
 
 ## 0.0.1
 

@@ -13,6 +13,7 @@ import { runTask } from "../src/runner.ts";
 import { sandboxed } from "../src/sandbox.ts";
 import { guard, needsTrust, TrustError } from "../src/trust.ts";
 import type { AgentEvent, GenericSpec } from "../src/types.ts";
+import { fakeCli, pathWith } from "./helpers.ts";
 
 const FAKE = join(import.meta.dir, "fixtures", "fake-acp-agent.ts");
 let root: string;
@@ -26,7 +27,7 @@ beforeEach(() => {
   git(root, "add", ".");
   git(root, ...YXU_IDENTITY, "commit", "-qm", "init");
   bin = mkdtempSync(join(tmpdir(), "yxu-bin-"));
-  process.env.PATH = `${bin}:${origPath}`;
+  process.env.PATH = pathWith(bin, origPath);
 });
 afterEach(() => {
   process.env.PATH = origPath;
@@ -159,16 +160,14 @@ describe("generic agents", () => {
 
   test("an agent writing outside its worktree is flagged", async () => {
     // A generic agent that ignores its working directory and writes into the user's checkout.
-    writeFileSync(join(bin, "stray"), `#!/bin/sh\necho oops > "${root}/stray.txt"\necho wrote it\n`);
-    chmodSync(join(bin, "stray"), 0o755);
+    fakeCli(bin, "stray", `#!/bin/sh\necho oops > "${root}/stray.txt"\necho wrote it\n`);
     const profile = toProfile(parseConfig("agents:\n  s: { cli: generic, command: [stray, '{{task}}'] }\n", "x").agents.s!);
     const r = await runTask({ agentName: "s", profile, prompt: "go", cwd: root });
     expect(r.summary).toContain("[warning] wrote outside its worktree, into your checkout: stray.txt");
   });
 
   test("yxu agent test: PASS for a working agent", async () => {
-    writeFileSync(join(bin, "good"), `#!/bin/sh\nprintf ready > yxu-check.txt\necho\necho Created the file.\n`);
-    chmodSync(join(bin, "good"), 0o755);
+    fakeCli(bin, "good", `#!/bin/sh\nprintf ready > yxu-check.txt\necho\necho Created the file.\n`);
     const cfg = parseConfig("agents:\n  g: { cli: generic, command: [good, '{{task}}'] }\n", "x");
     const lines: string[] = [];
     expect(await agentTest(cfg, "g", { print: (l) => lines.push(l), dim: (s) => s })).toBe(true);

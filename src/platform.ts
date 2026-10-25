@@ -1,15 +1,74 @@
 /**
  * Runtime and platform helpers. Every Bun-specific API (spawn, which, stringWidth) is used
  * only here, so a Node port or a native Windows port touches one file (docs/PUBLIC_PLAN.md §8).
+ *
+ * Windows: commands are resolved through PATH/PATHEXT first (so npm's .cmd shims run), shell
+ * command lines use Git's `sh` when it is installed (packs and docs write POSIX commands) and
+ * cmd.exe otherwise, and process trees are ended with `taskkill /T` instead of process groups.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import pkg from "../package.json" with { type: "json" };
 
 export const VERSION: string = pkg.version;
 
+export const isWindows = process.platform === "win32";
+
 /** Absolute path of an executable on PATH, or null. */
 export function which(bin: string): string | null {
-  return Bun.which(bin);
+  // The current PATH, explicitly: on Windows Bun otherwise keeps using the one it started with.
+  return Bun.which(bin, { PATH: process.env.PATH ?? process.env.Path ?? "" });
+}
+
+/** Git for Windows' sh, if installed (PATH first, then the usual install folders). */
+function windowsSh(): string | null {
+  const found = which("sh");
+  if (found) return found;
+  for (const base of [process.env.ProgramFiles, process.env["ProgramFiles(x86)"], process.env.LOCALAPPDATA && `${process.env.LOCALAPPDATA}\\Programs`]) {
+    const p = base && `${base}\\Git\\bin\\sh.exe`;
+    if (p && existsSync(p)) return p;
+  }
+  return null;
+}
+
+/** argv that runs a shell command line: `sh -c` (on Windows Git's sh, else cmd.exe). */
+export function shellArgv(command: string): string[] {
+  if (!isWindows) return ["sh", "-c", command];
+  const sh = windowsSh();
+  return sh ? [sh, "-c", command] : ["cmd.exe", "/d", "/s", "/c", command];
+}
+
+/** Like shellArgv, with stderr folded into stdout for the whole command list. */
+export function shellArgvMerged(command: string): string[] {
+  const argv = shellArgv(command);
+  return argv[0] === "cmd.exe" ? [...argv.slice(0, -1), `(${command}) 2>&1`] : [argv[0]!, "-c", `(${command}\n) 2>&1`];
+}
+
+/**
+ * On Windows, run `foo` as the file PATHEXT finds, as a Unix shell would. npm installs CLIs as
+ * `.cmd` shims, and cmd.exe can't pass arguments with newlines (every agent prompt has them), so
+ * a shim is run as the script it points to (`node <script>`, or the .exe directly).
+ */
+export function resolveArgv(argv: string[]): string[] {
+  if (!isWindows || !argv[0]) return argv;
+  const exe = /[\\/]/.test(argv[0]) ? argv[0] : which(argv[0]);
+  if (!exe) return argv;
+  const rest = argv.slice(1);
+  if (!/\.(cmd|bat)$/i.test(exe)) return [exe, ...rest];
+  const target = npmShimTarget(readFileSync(exe, "utf8"), exe);
+  if (target) {
+    if (/\.exe$/i.test(target)) return [target, ...rest];
+    const local = join(dirname(exe), "node.exe");
+    return [existsSync(local) ? local : (which("node") ?? "node"), target, ...rest];
+  }
+  // Not an npm shim: cmd.exe it is (arguments with newlines or quotes may not survive).
+  return ["cmd.exe", "/d", "/s", "/c", exe, ...rest];
+}
+
+/** The script an npm `.cmd` shim runs: `"%dp0%\node_modules\x\bin\x.js" %*` (or `%~dp0`). */
+export function npmShimTarget(text: string, shimFile: string): string | undefined {
+  const m = /"%~?dp0%?\\([^"]+)"\s+%\*/i.exec(text);
+  return m ? join(dirname(shimFile), ...m[1]!.split("\\")) : undefined;
 }
 
 /** Display width of a string in terminal cells. */
@@ -42,7 +101,7 @@ function envFor(opts: SpawnOptions): Record<string, string | undefined> | undefi
 
 /** Run a command to completion, capturing output. Throws if the executable can't start. */
 export function runSync(argv: string[], opts: SpawnOptions = {}): Captured {
-  const p = Bun.spawnSync(argv, { cwd: opts.cwd, env: envFor(opts), stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawnSync(resolveArgv(argv), { cwd: opts.cwd, env: envFor(opts), stdout: "pipe", stderr: "pipe" });
   return { code: p.exitCode ?? 1, stdout: p.stdout.toString(), stderr: p.stderr.toString() };
 }
 
@@ -55,7 +114,7 @@ export interface Child {
 
 /** Start a command with stdin closed and stdout/stderr captured. */
 export function start(argv: string[], opts: SpawnOptions = {}): Child {
-  const proc = Bun.spawn(argv, {
+  const proc = Bun.spawn(resolveArgv(argv), {
     cwd: opts.cwd,
     env: envFor(opts),
     detached: opts.detached,
@@ -81,7 +140,7 @@ export interface Duplex {
 
 /** Start a long-running process we talk to over stdin/stdout (e.g. an ACP agent). */
 export function spawnDuplex(argv: string[], opts: SpawnOptions = {}): Duplex {
-  const proc = Bun.spawn(argv, { cwd: opts.cwd, env: envFor(opts), detached: opts.detached, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn(resolveArgv(argv), { cwd: opts.cwd, env: envFor(opts), detached: opts.detached, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const stderr = new Response(proc.stderr).text();
   return {
     pid: proc.pid,
@@ -113,12 +172,17 @@ export function spawnDuplex(argv: string[], opts: SpawnOptions = {}): Duplex {
 
 /** Run a command attached to this terminal; resolves with its exit code. */
 export async function runAttached(argv: string[], opts: SpawnOptions & { stdin?: "inherit" | "ignore" } = {}): Promise<number> {
-  const proc = Bun.spawn(argv, { cwd: opts.cwd, env: envFor(opts), stdio: [opts.stdin ?? "inherit", "inherit", "inherit"] });
+  const proc = Bun.spawn(resolveArgv(argv), { cwd: opts.cwd, env: envFor(opts), stdio: [opts.stdin ?? "inherit", "inherit", "inherit"] });
   return proc.exited;
 }
 
-/** Signal a whole process group started with `detached: true` (Unix). */
+/** End a process and everything it started: its process group on Unix, its tree on Windows. */
 export function killGroup(pid: number, signal: NodeJS.Signals) {
+  if (isWindows) {
+    // Console programs ignore taskkill's polite close, so the tree is always ended forcibly.
+    Bun.spawnSync(["taskkill", "/pid", String(pid), "/T", "/F"], { stdout: "ignore", stderr: "ignore" });
+    return;
+  }
   try {
     process.kill(-pid, signal);
   } catch {

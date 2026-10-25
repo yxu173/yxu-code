@@ -4,16 +4,17 @@
 "use strict";
 const { spawnSync } = require("node:child_process");
 
-const pkg = `yxu-${process.platform}-${process.arch}`;
+const os = process.platform === "win32" ? "windows" : process.platform;
+const pkg = `yxu-${os}-${process.arch}`;
 let bin = process.env.YXU_BINARY;
 if (!bin) {
   try {
-    bin = require.resolve(`${pkg}/bin/yxu`);
+    bin = require.resolve(`${pkg}/bin/${process.platform === "win32" ? "yxu.exe" : "yxu"}`);
   } catch {
-    const supported = "linux-x64, linux-arm64, darwin-x64, darwin-arm64";
+    const supported = "linux-x64, linux-arm64, darwin-x64, darwin-arm64, windows-x64";
     console.error(
-      `yxu: no prebuilt binary for ${process.platform}-${process.arch} (package ${pkg} is missing).\n` +
-        `  Supported: ${supported}. On Windows, use WSL.\n` +
+      `yxu: no prebuilt binary for ${os}-${process.arch} (package ${pkg} is missing).\n` +
+        `  Supported: ${supported}.\n` +
         `  If your platform is supported, reinstall without --no-optional / --omit=optional.`,
     );
     process.exit(1);

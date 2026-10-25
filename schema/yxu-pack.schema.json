@@ -37,6 +37,7 @@
         "orchestrator": {
           "default": {
             "model": "opus",
+            "provider": "claude",
             "user_settings": false
           },
           "type": "object",
@@ -44,6 +45,15 @@
             "model": {
               "default": "opus",
               "description": "Claude model that plans, delegates and reviews",
+              "type": "string"
+            },
+            "provider": {
+              "default": "claude",
+              "description": "Who answers pipeline plan and review steps: claude (default), agent (orchestrator.agent), or an orchestrator added by a plugin. Auto workflows need claude",
+              "type": "string"
+            },
+            "agent": {
+              "description": "provider: agent — the agent that plans and reviews (read-only, in its own worktree)",
               "type": "string"
             },
             "effort": {
@@ -86,15 +96,23 @@
                 "type": "object",
                 "properties": {
                   "cli": {
-                    "type": "string",
-                    "enum": [
-                      "commandcode",
-                      "opencode",
-                      "claude",
-                      "acp",
-                      "generic"
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "commandcode",
+                          "opencode",
+                          "claude",
+                          "acp",
+                          "generic"
+                        ]
+                      },
+                      {
+                        "type": "string",
+                        "pattern": "^[a-z][a-z0-9-]*$"
+                      }
                     ],
-                    "description": "commandcode, opencode, claude (built in); acp (any Agent Client Protocol agent); generic (any CLI, see command)"
+                    "description": "commandcode, opencode, claude (built in); acp (any Agent Client Protocol agent); generic (any CLI, see command); or a cli added by a plugin"
                   },
                   "command": {
                     "description": "acp: the command that starts the agent, e.g. [gemini, --experimental-acp]. generic: argv with {{task}}, {{model}}, {{cwd}}",
@@ -498,15 +516,23 @@
                 "tasks",
                 "cost"
               ],
-              "description": "Which panel sections to show, in order",
+              "description": "Which panel sections to show, in order; plugin sections are \"<plugin>:<title>\" (shown after these unless listed)",
               "type": "array",
               "items": {
-                "type": "string",
-                "enum": [
-                  "context",
-                  "agents",
-                  "tasks",
-                  "cost"
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "context",
+                      "agents",
+                      "tasks",
+                      "cost"
+                    ]
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]*:.+$"
+                  }
                 ]
               }
             },

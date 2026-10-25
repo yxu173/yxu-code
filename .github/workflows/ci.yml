@@ -19,7 +19,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
@@ -31,7 +34,14 @@ jobs:
         run: |
           git config --global user.name ci
           git config --global user.email ci@example.invalid
+          git config --global core.autocrlf false  # the tests compare file contents byte for byte
           bun test
       - run: bun run build
       - name: smoke test the binary
+        if: runner.os != 'Windows'
         run: scripts/smoke.sh dist/yxu
+      - name: smoke test the binary (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          ./dist/yxu.exe --version
+          ./dist/yxu.exe add | grep -q "starter packs"

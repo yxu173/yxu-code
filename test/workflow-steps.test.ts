@@ -7,6 +7,7 @@ import { loadLayers } from "../src/config-layers.ts";
 import { branchFor, git, YXU_IDENTITY } from "../src/git.ts";
 import { resolveInputs, runPipeline, type PipelineOptions } from "../src/orchestrator/pipeline.ts";
 import type { OrchestratorRender } from "../src/orchestrator/run.ts";
+import { fakeCli, pathWith } from "./helpers.ts";
 
 let root: string;
 let bin: string;
@@ -28,10 +29,9 @@ beforeEach(() => {
   git(root, "add", ".");
   git(root, ...YXU_IDENTITY, "commit", "-qm", "init");
   bin = mkdtempSync(join(tmpdir(), "yxu-bin-"));
-  scratch = mkdtempSync(join(tmpdir(), "yxu-scratch-"));
-  writeFileSync(join(bin, "opencode"), FAKE_AGENT);
-  chmodSync(join(bin, "opencode"), 0o755);
-  process.env.PATH = `${bin}:${origPath}`;
+  scratch = mkdtempSync(join(tmpdir(), "yxu-scratch-")).replaceAll("\\", "/"); // also inside YAML strings on Windows
+  fakeCli(bin, "opencode", FAKE_AGENT);
+  process.env.PATH = pathWith(bin, origPath);
 });
 
 afterEach(() => {
@@ -161,7 +161,7 @@ describe("parallel and loop", () => {
   });
 
   test("loop repeats until the condition holds, or fails after max_rounds", async () => {
-    const counter = join(scratch, "n");
+    const counter = join(scratch, "n").replaceAll("\\", "/");
     const c = cfg(`  w:
     mode: pipeline
     steps:

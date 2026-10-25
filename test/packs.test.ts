@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import Ajv from "ajv";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { generatePacks, GEN_FILE } from "../scripts/gen-packs.ts";
 import { parseConfig } from "../src/config.ts";
@@ -59,7 +60,7 @@ function packRepo(files: Record<string, string>): string {
   write(join(repo, "pack"), files);
   git(repo, "add", ".");
   git(repo, ...YXU_IDENTITY, "commit", "-qm", "update");
-  return `file://${repo}//pack`;
+  return `${pathToFileURL(repo).href}//pack`;
 }
 
 const REVIEW_PACK = {
@@ -102,7 +103,8 @@ describe("sources", () => {
     expect(parseSource("gitlab:a/b#main")).toMatchObject({ url: "https://gitlab.com/a/b.git", ref: "main" });
     expect(parseSource("https://example.com/x.git//packs/a#v1")).toMatchObject({ url: "https://example.com/x.git", subpath: "packs/a", ref: "v1" });
     expect(parseSource("git@github.com:a/b.git")).toMatchObject({ kind: "git", url: "git@github.com:a/b.git" });
-    expect(parseSource("./mine", "/repo")).toMatchObject({ kind: "local", path: "/repo/mine" });
+    expect(parseSource("./mine", "/repo")).toMatchObject({ kind: "local", path: resolve("/repo", "mine") });
+    expect(parseSource("C:\\Users\\me\\pack")).toMatchObject({ kind: "local" });
     expect(() => parseSource("what is this")).toThrow(/can't tell where/);
   });
 
@@ -291,7 +293,7 @@ describe("extends", () => {
     write(repo, { "team.yaml": "version: 1\nsettings:\n  concurrency: 6\n" });
     git(repo, "add", ".");
     git(repo, ...YXU_IDENTITY, "commit", "-qm", "one");
-    const spec = `file://${repo}//team.yaml`;
+    const spec = `${pathToFileURL(repo).href}//team.yaml`;
     writeFileSync(join(root, "yxu.yaml"), `extends: ["${spec}"]\n${TEAM}`);
 
     expect(loadLayers(root).config.settings.concurrency).toBe(6);

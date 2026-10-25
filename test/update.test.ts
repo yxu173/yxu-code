@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { compareVersions, installKind, platformAsset, update, type UpdateDeps } from "../src/update.ts";
+import { compareVersions, installKind, platformAsset, tarCommand, update, type UpdateDeps } from "../src/update.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -22,16 +22,20 @@ test("install kind and release asset", () => {
   expect(installKind("/home/u/.local/bin/yxu", true)).toBe("binary");
   expect(installKind("/usr/bin/bun", false)).toBe("source");
   expect(platformAsset("darwin", "arm64")).toBe("yxu-darwin-arm64.tar.gz");
-  expect(() => platformAsset("win32", "x64")).toThrow(/WSL/);
+  expect(platformAsset("win32", "x64")).toBe("yxu-windows-x64.zip");
+  expect(() => platformAsset("win32", "arm64")).toThrow(/windows-x64 only/);
 });
 
 /** A fake GitHub serving one release whose binary is a shell script printing "new". */
 function fakeRelease(tag: string, opts: { badSum?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "yxu-upd-"));
   dirs.push(dir);
-  writeFileSync(join(dir, "yxu"), "#!/bin/sh\necho new\n");
   const asset = platformAsset();
-  Bun.spawnSync(["tar", "-czf", join(dir, asset), "-C", dir, "yxu"]);
+  const zip = asset.endsWith(".zip");
+  const exe = zip ? "yxu.exe" : "yxu";
+  writeFileSync(join(dir, exe), "#!/bin/sh\necho new\n");
+  // Windows' bsdtar writes zip files (-a picks the format from the name).
+  Bun.spawnSync(zip ? [tarCommand(), "-a", "-cf", join(dir, asset), "-C", dir, exe] : ["tar", "-czf", join(dir, asset), "-C", dir, exe]);
   const archive = readFileSync(join(dir, asset));
   const sum = opts.badSum ? "0".repeat(64) : createHash("sha256").update(archive).digest("hex");
   const files: Record<string, string | Buffer> = { [asset]: archive, "checksums.txt": `${sum}  ${asset}\n` };
@@ -67,7 +71,8 @@ test("binary install is replaced after checksum verification", async () => {
   const { deps, log, target } = fakeRelease("v0.2.0");
   expect(await update({ kind: "binary", current: "0.1.0", target }, deps)).toBe(0);
   expect(readFileSync(target, "utf8")).toContain("echo new");
-  expect(Bun.spawnSync([target]).stdout.toString().trim()).toBe("new");
+  if (process.platform !== "win32") expect(Bun.spawnSync([target]).stdout.toString().trim()).toBe("new"); // a shell script stands in for the binary
+  else expect(existsSync(`${target}.old`)).toBe(true); // Windows: the running exe is moved aside, not overwritten
   expect(log.at(-1)).toMatch(/updated yxu 0\.1\.0 → 0\.2\.0/);
 });
 

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { readTaskRecord, taskAncestors, type TaskRecord } from "./combine.ts";
 import type { Config } from "./config.ts";
 import { branchFor, git, removeWorktree, tryGit, worktreeFor } from "./git.ts";
-import { formatHookFailure, hooksFor, runHooks } from "./hooks.ts";
+import { formatHookFailure, hasHooks, runHooks } from "./hooks.ts";
 import type { TaskResult } from "./types.ts";
 
 export type ActionResult = { ok: true; message: string } | { ok: false; message: string; hint?: string };
@@ -42,7 +42,7 @@ export function applyTask(root: string, id: string): ActionResult {
 
 /** Run the before_apply hooks in the task's worktree, then apply. A failing hook blocks the apply. */
 export async function applyWithHooks(cfg: Config, root: string, id: string, signal?: AbortSignal): Promise<ActionResult> {
-  if (hooksFor(cfg, "before_apply").length) {
+  if (hasHooks(cfg, "before_apply")) {
     const r = readTaskRecord(root, id);
     const wt = worktreeFor(root, id);
     if (r?.branch && existsSync(wt)) {

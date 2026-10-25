@@ -107,6 +107,8 @@ export interface State {
   helpOpen: boolean;
   /** Panel sections in order, and whether the key-hint footer shows (ui.* config). */
   layout?: { sections: string[]; footer: boolean };
+  /** Side-panel sections from plugins, by id "<plugin>:<title>". */
+  pluginPanels?: { id: string; title: string; lines: string[] }[];
   /** Custom commands from .yxu/commands, for help: [usage, description]. */
   customHelp?: [string, string][];
   /** Rows scrolled down in the help overlay. */

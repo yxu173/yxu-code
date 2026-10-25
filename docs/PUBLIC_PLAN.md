@@ -318,6 +318,23 @@ Phases 1–3 deliver most of the value. Packs (4) only make sense once the file 
   the discovery index are not done. `init` does not check whether an agent CLI is logged in; it
   points to `yxu agent test` instead.
 
+- **Phase 5 (plugins & reach), in review:**
+  - plugin API v1 (TypeScript): commands, panel sections, hooks, agents, orchestrators
+  - plugins from a repo or project pack load only after approval, pinned to a hash of their code
+  - pluggable orchestrator for pipelines: `orchestrator.provider: claude | agent | <plugin>`
+  - native Windows support: process-tree kill, Git's `sh` or cmd.exe for commands, `.cmd` shims, a windows-x64 release, Windows CI
+
+  Exit criterion met: the example `todos` pack's plugin adds `/todos:list`, `/todos:fix` and a
+  panel section, verified in the compiled binary in a real terminal. A pipeline ran with OpenCode
+  as planner, coder and reviewer (no Claude). Decisions taken: TypeScript-only plugins for v1
+  (§12.5); Claude stays the default, and the orchestrator interface covers pipeline steps (§12.3).
+  Native Windows is verified by CI only (no Windows machine):
+  - the whole test suite runs on windows-latest, including agents launched through npm-style
+    `.cmd` shims with multi-line prompts;
+  - the release zip passes a smoke test (`init`, packs, config).
+
+  No real agent CLI has been run on Windows.
+
 ## 12. Decisions needed from the owner
 
 Decided: **MIT** license (1). The repo is `yxu-code`; the command and npm package stay `yxu` (2).

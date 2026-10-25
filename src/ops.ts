@@ -4,7 +4,7 @@ import { combineTasks, readTaskRecord } from "./combine.ts";
 import { toProfile, type Config } from "./config.ts";
 import { taskData } from "./actions.ts";
 import { branchFor, collectChanges, createWorktree, git, removeWorktree, worktreeFor, YXU_IDENTITY } from "./git.ts";
-import { formatHookFailure, hooksFor, runHooks } from "./hooks.ts";
+import { formatHookFailure, hasHooks, runHooks } from "./hooks.ts";
 import { newTaskId, runTask, Semaphore, writeTaskRecord } from "./runner.ts";
 import { prompt, SUBAGENT_PREAMBLE } from "./prompts.ts";
 import type { Asker } from "./permissions.ts";
@@ -127,7 +127,7 @@ export class TaskOps {
         onEvent: (taskId, e) => this.hooks.onAgentEvent?.(taskId, e),
         onStart: (taskId) => this.hooks.onDelegateStart?.({ taskId, agent, model: profile.model, task, buildOn }),
       });
-      if (result.branch && hooksFor(this.cfg, "after_task").length) await this.afterTask(result);
+      if (result.branch && hasHooks(this.cfg, "after_task")) await this.afterTask(result);
       this.session.tasks.set(result.taskId, { ...result, prompt: task, parents: buildOn ? [buildOn] : [] });
       this.hooks.onDelegateEnd?.(result);
       this.opts.onChange?.();
@@ -139,7 +139,7 @@ export class TaskOps {
   private async afterTask(r: TaskResult) {
     const wt = worktreeFor(this.root, r.taskId);
     const h = await runHooks(this.cfg, "after_task", { task: taskData(r) }, { cwd: wt, signal: this.opts.signal });
-    if (h.runs.length && git(wt, "status", "--porcelain")) {
+    if (git(wt, "status", "--porcelain")) {
       git(wt, "add", "-A");
       git(wt, ...YXU_IDENTITY, "commit", "-q", "--no-verify", "-m", "yxu(after_task hooks)");
       // The task is its agent's commit plus this one.

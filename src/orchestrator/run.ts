@@ -210,6 +210,10 @@ export async function runOrchestrator(opts: {
   resume?: string;
 }): Promise<RunOutcome> {
   const { cfg, workflow, root, render } = opts;
+  if ((cfg.orchestrator.provider ?? "claude") !== "claude") {
+    const name = (workflow as { name?: string }).name ?? "default";
+    throw new Error(`workflow "${name}" is an auto workflow, which needs orchestrator.provider: claude (it is "${cfg.orchestrator.provider}"). Use a pipeline workflow (for example \`feature\`), or set orchestrator.provider back to claude.`);
+  }
   const session = opts.session ?? new Session();
   const runId = `run-${newTaskId()}`;
   const ops = new TaskOps(cfg, root, session, {
