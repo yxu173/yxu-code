@@ -5,6 +5,7 @@
 import { spawnSync } from "node:child_process";
 import { parseDuration } from "../config.ts";
 import { tryGit } from "../git.ts";
+import { which } from "../platform.ts";
 import type { CliName } from "../types.ts";
 import type { App } from "./app.ts";
 
@@ -489,7 +490,7 @@ function doctor(app: App) {
     ["claude", "claude"],
   ];
   const lines = bins.map(([cli, bin]) => {
-    const path = Bun.which(bin);
+    const path = which(bin);
     if (!path) return `- ✗ **${cli}** — \`${bin}\` not found on PATH`;
     const args = cli === "commandcode" ? ["--version", "--no-auto-update"] : ["--version"];
     const v = spawnSync(bin, args, { encoding: "utf8", timeout: 5000 }).stdout?.trim().split("\n").at(-1) ?? "?";

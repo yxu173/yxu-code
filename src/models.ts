@@ -8,6 +8,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { start, which } from "./platform.ts";
 import type { CliName } from "./types.ts";
 
 export interface ModelInfo {
@@ -90,10 +91,9 @@ export function parseOpencodeModels(text: string): ModelInfo[] {
 }
 
 async function run(argv: string[], timeoutMs = 20_000): Promise<string> {
-  const proc = Bun.spawn(argv, { stdin: "ignore", stdout: "pipe", stderr: "pipe", env: { ...process.env, NO_COLOR: "1" } });
+  const proc = start(argv, { env: { ...process.env, NO_COLOR: "1" } });
   const timer = setTimeout(() => proc.kill("SIGKILL"), timeoutMs);
-  const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-  const code = await proc.exited;
+  const { code, stdout: out, stderr: err } = await proc.result;
   clearTimeout(timer);
   if (code !== 0 && !out.trim()) throw new Error(err.trim().split("\n").at(-1) || `exit ${code}`);
   return out + (out.includes("\n") ? "" : err); // some CLIs print the list on stderr
@@ -105,10 +105,10 @@ export async function discoverModels(cli: CliName): Promise<ModelInfo[]> {
     case "claude":
       return CLAUDE_MODELS;
     case "commandcode":
-      if (!Bun.which("cmd")) throw new Error("`cmd` not found on PATH");
+      if (!which("cmd")) throw new Error("`cmd` not found on PATH");
       return parseCommandCodeModels(await run(["cmd", "--list-models", "--no-auto-update"]));
     case "opencode":
-      if (!Bun.which("opencode")) throw new Error("`opencode` not found on PATH");
+      if (!which("opencode")) throw new Error("`opencode` not found on PATH");
       return parseOpencodeModels(await run(["opencode", "models", "--verbose"]));
   }
 }

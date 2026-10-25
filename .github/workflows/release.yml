@@ -1,0 +1,166 @@
+name: release
+
+# Push a tag like v0.1.0 (matching package.json "version") to build, smoke-test and publish.
+# Pull requests that touch the release machinery run the build and smoke jobs only.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/build-release.ts
+      - scripts/packaging.ts
+      - scripts/smoke.sh
+      - npm/**
+      - install.sh
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      - name: build all targets
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then bun scripts/build-release.ts --version "$GITHUB_REF_NAME"
+          else bun scripts/build-release.ts; fi
+      - name: package manifests and install.sh (dry run)
+        run: |
+          bun scripts/packaging.ts --checksums dist/release/checksums.txt
+          sh -n install.sh
+      - uses: actions/upload-artifact@v5
+        with:
+          name: release
+          path: dist/release
+      - uses: actions/upload-artifact@v5
+        with:
+          name: npm
+          path: dist/npm
+
+  smoke:
+    needs: build
+    name: smoke (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: linux-x64 }
+          - { os: ubuntu-24.04-arm, target: linux-arm64 }
+          - { os: macos-latest, target: darwin-arm64 }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: release
+          path: release
+      - name: verify checksum and run
+        run: |
+          cd release
+          grep "yxu-${{ matrix.target }}.tar.gz" checksums.txt | (shasum -a 256 -c - 2>/dev/null || sha256sum -c -)
+          tar -xzf "yxu-${{ matrix.target }}.tar.gz"
+          cd ..
+          scripts/smoke.sh release/yxu
+
+  github-release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: release
+          path: release
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" release/* --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" --generate-notes $prerelease
+
+  npm:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v5
+        with:
+          name: npm
+          path: npm
+      - name: publish (skipped without the NPM_TOKEN secret)
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then echo "NPM_TOKEN is not set; skipping npm publish"; exit 0; fi
+          tag=latest
+          case "$GITHUB_REF_NAME" in *-*) tag=next ;; esac
+          # Platform packages first, so the wrapper's optional dependencies resolve.
+          for dir in npm/yxu-*; do
+            chmod +x "$dir/bin/yxu"
+            npm publish "$dir" --access public --provenance --tag "$tag"
+          done
+          npm publish npm/yxu --access public --provenance --tag "$tag"
+
+  packaging:
+    needs: github-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      AUR_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - uses: actions/download-artifact@v5
+        with:
+          name: release
+          path: release
+      - run: bun scripts/packaging.ts --version "${GITHUB_REF_NAME}" --checksums release/checksums.txt
+      - name: attach manifests to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp dist/packaging/PKGBUILD dist/packaging/yxu-bin.PKGBUILD
+          gh release upload "$GITHUB_REF_NAME" dist/packaging/yxu.rb dist/packaging/yxu-bin.PKGBUILD --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Homebrew tap (skipped without HOMEBREW_TAP_TOKEN)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then echo "HOMEBREW_TAP_TOKEN is not set; skipping"; exit 0; fi
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/yxu173/homebrew-tap.git" tap
+          mkdir -p tap/Formula && cp dist/packaging/yxu.rb tap/Formula/yxu.rb
+          cd tap
+          git config user.name "yxu release" && git config user.email "actions@users.noreply.github.com"
+          git add Formula/yxu.rb && git commit -m "yxu ${GITHUB_REF_NAME}" && git push
+      - name: AUR yxu-bin (skipped without AUR_SSH_PRIVATE_KEY)
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: |
+          if [ -z "$AUR_KEY" ]; then echo "AUR_SSH_PRIVATE_KEY is not set; skipping"; exit 0; fi
+          mkdir -p ~/.ssh && printf '%s\n' "$AUR_KEY" > ~/.ssh/aur && chmod 600 ~/.ssh/aur
+          ssh-keyscan -H aur.archlinux.org >> ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur"
+          git clone ssh://aur@aur.archlinux.org/yxu-bin.git aur
+          cp dist/packaging/PKGBUILD dist/packaging/.SRCINFO aur/
+          cd aur
+          git config user.name "yxu release" && git config user.email "actions@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO && git commit -m "yxu ${GITHUB_REF_NAME}" && git push

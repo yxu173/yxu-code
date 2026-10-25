@@ -1,0 +1,35 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `yxu doctor`
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant part of yxu.yaml
+      description: Remove anything private.
+      render: yaml
+  - type: textarea
+    id: logs
+    attributes:
+      label: Task record or error output
+      description: "`yxu show <task-id>` or the error text, if relevant."
+      render: text
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal and OS (for interface issues)
+      placeholder: e.g. kitty 0.40 on Arch Linux, iTerm2 on macOS 26

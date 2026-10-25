@@ -268,7 +268,23 @@ land without breaking configs.
 
 Phases 1–3 deliver most of the value. Packs (4) only make sense once the file formats are stable.
 
+### Status
+
+- **Phase 0 (foundation), in review:**
+  - repo at github.com/yxu173/yxu-code under the MIT license
+  - CI on Linux and macOS
+  - `src/platform.ts` (which, stringWidth, version, Claude engine path)
+  - a release workflow with binaries, checksums, `install.sh` and npm packages
+  - community files and a README for new users
+
+  - Homebrew formula and AUR package, `yxu update`, and every Bun API behind `platform.ts`
+
+  Remaining: the first tagged release, and the publishing secrets (npm, tap, AUR).
+
 ## 12. Decisions needed from the owner
+
+Decided: **MIT** license (1). The repo is `yxu-code`; the command and npm package stay `yxu` (2).
+
 
 1. **License:** MIT (simplest, most adoption) or Apache-2.0 (patent grant)?
 2. **Name:** keep `yxu` (free on npm) or rename before the first public release?

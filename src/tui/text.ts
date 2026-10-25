@@ -1,3 +1,4 @@
+import { stringWidth } from "../platform.ts";
 import type { Style, Theme } from "./theme.ts";
 
 /** A run of text with one style. Text never contains newlines or ANSI codes. */
@@ -11,7 +12,7 @@ export type Line = Span[];
 export const span = (text: string, style: Style = {}): Span => ({ text, ...style });
 
 export function width(s: string): number {
-  return Bun.stringWidth(s);
+  return stringWidth(s);
 }
 
 export function lineWidth(line: Line): number {
