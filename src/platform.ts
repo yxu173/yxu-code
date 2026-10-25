@@ -16,7 +16,8 @@ export const isWindows = process.platform === "win32";
 
 /** Absolute path of an executable on PATH, or null. */
 export function which(bin: string): string | null {
-  return Bun.which(bin);
+  // The current PATH, explicitly: on Windows Bun otherwise keeps using the one it started with.
+  return Bun.which(bin, { PATH: process.env.PATH ?? process.env.Path ?? "" });
 }
 
 /** Git for Windows' sh, if installed (PATH first, then the usual install folders). */

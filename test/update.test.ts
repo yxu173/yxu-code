@@ -71,7 +71,8 @@ test("binary install is replaced after checksum verification", async () => {
   const { deps, log, target } = fakeRelease("v0.2.0");
   expect(await update({ kind: "binary", current: "0.1.0", target }, deps)).toBe(0);
   expect(readFileSync(target, "utf8")).toContain("echo new");
-  expect(Bun.spawnSync([target]).stdout.toString().trim()).toBe("new");
+  if (process.platform !== "win32") expect(Bun.spawnSync([target]).stdout.toString().trim()).toBe("new"); // a shell script stands in for the binary
+  else expect(existsSync(`${target}.old`)).toBe(true); // Windows: the running exe is moved aside, not overwritten
   expect(log.at(-1)).toMatch(/updated yxu 0\.1\.0 → 0\.2\.0/);
 });
 
