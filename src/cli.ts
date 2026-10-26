@@ -12,6 +12,7 @@ import { Session, TaskOps } from "./ops.ts";
 import { runPipeline } from "./orchestrator/pipeline.ts";
 import { compactConversation, orchestratorPrompt, runOrchestrator, sessionPath, type OrchestratorRender, type RunOutcome } from "./orchestrator/run.ts";
 import { Conversation } from "./conversation.ts";
+import { deleteTranscripts } from "./transcripts.ts";
 import { deleteSession, samePath, describe as describeSession, findSession, listSessions, newSession, renameSession, saveSession, tildePath, titleFrom, type SessionFile } from "./sessions.ts";
 import { issueGoal, resolveIssue, type Issue } from "./github.ts";
 import { defaultBase, draftPr, openPr, recentTasks, tagIssue, tagRun } from "./pr.ts";
@@ -42,6 +43,9 @@ Usage:
                             -c (--continue) continues this repo's latest session,
                             -s <id> (--session) a given one;
                             --issue 123|owner/repo#123|URL|linear:ENG-12 works on an issue
+  yxu orchestrator [prompt] | set <setting> <value> [--local|--user] | unset <setting>
+                            how the orchestrator works: model, effort, budget, turns,
+                            provider, agent, user-settings, instructions; prompt shows its instructions
   yxu sessions [--all|--here] [--json] | rm <id> | rename <id> <title>
                             saved sessions: this repo's, every repo's, or this folder's
   yxu resume [id|last] [--all]
@@ -348,10 +352,11 @@ async function run(argv: string[]) {
     const outcome = await withRunHooks(cfg, root, { goal, workflow: workflow.name, session, signal: ac.signal }, () =>
       workflow.mode === "pipeline"
         ? runPipeline({ goal, cfg, workflow, root, abort: ac, render: r.render, inputs, gate: cliGate(values.yes), session })
-        : runOrchestrator({ goal, cfg, workflow, root, abort: ac, render: r.render, session, resume: next.resume, preamble: next.preamble }),
+        : runOrchestrator({ goal, cfg, workflow, root, abort: ac, render: r.render, session, resume: next.resume, preamble: next.preamble, history: conv.state.log }),
     );
     if (issue) tagIssue(root, outcome.session.tasks.keys(), issue);
     if (outcome.ok) tagRun(root, outcome.session.tasks.keys(), { goal: issue ? `${issue.title} (${issue.id})` : goal, report: outcome.finalText });
+    if (outcome.memoryRebuilt) console.log(dim("(this session's conversation history was gone; continued from yxu's record of its turns)\n"));
     if (!outcome.cancelled) await rememberSession(root, cfg, conv, file, { goal: issue ? `${issue.title} (${issue.id})` : goal, outcome, auto, workflow: workflow.name, usedSummary: next.usesSummary, continuing: Boolean(saved) });
 
     // The final report is usually the last assistant message, already printed above.
@@ -427,6 +432,48 @@ async function summarizeDetached([id, sessionId, turn]: string[]) {
   saveSession(file);
 }
 
+/** `yxu orchestrator [prompt] | set <setting> <value> [--local|--user|--project] | unset <setting>`. */
+async function orchestratorCommand(argv: string[]) {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: { local: { type: "boolean" }, user: { type: "boolean" }, project: { type: "boolean" }, workflow: { type: "string", short: "w" } },
+  });
+  const { fieldNamed, ORCHESTRATOR_FIELDS, orchestratorReport } = await import("./orchestrator-settings.ts");
+  const { saveConfigPatch } = await import("./config-edit.ts");
+  const { display } = await import("./config-layers.ts");
+  const root = repoRoot(process.cwd());
+  const cfg = loadConfig(root);
+  const [sub, name, ...rest] = positionals;
+  const layer = values.local ? "local" : values.user ? "user" : "project";
+  const names = `${ORCHESTRATOR_FIELDS.map((f) => f.name).join(", ")}`;
+  if (!sub || sub === "show") {
+    console.log(`${bold("orchestrator")}\n${orchestratorReport(cfg, root).join("\n")}`);
+    console.log(dim(`\nchange: yxu orchestrator set <setting> <value> [--local|--user]   (settings: ${names})\nprompt: yxu orchestrator prompt`));
+    return;
+  }
+  if (sub === "prompt") {
+    const wf = getWorkflow(cfg, values.workflow);
+    console.log(`${orchestratorPrompt(wf, root).trim()}\n\n${buildContextPrompt(cfg, root).text}`);
+    return;
+  }
+  const field = fieldNamed(name ?? "") ?? die(`usage: yxu orchestrator ${sub} <setting> … (settings: ${names})`);
+  let patch: { path: string[]; value: unknown }[];
+  if (sub === "set") {
+    const r = field.set(cfg, rest[0] ?? "", rest.slice(1));
+    if (typeof r === "string") die(r);
+    patch = r.sets.map((st) => ({ path: st.path, value: st.yaml === undefined ? st.value : st.yaml }));
+    if (r.warning) console.log(dim(r.warning));
+  } else if (sub === "unset") patch = [{ path: field.key.split("."), value: null }];
+  else die("usage: yxu orchestrator [show|prompt] | set <setting> <value> | unset <setting>");
+  try {
+    const file = saveConfigPatch(root, patch, layer);
+    console.log(`✓ ${field.name} ${sub === "unset" ? "back to its default" : `= ${fieldNamed(field.name)!.show(loadConfig(root))}`} in ${display(file, root)} (${layer})`);
+  } catch (e) {
+    die((e as Error).message);
+  }
+}
+
 /** `yxu sessions [--all|--here] [--json]`, `yxu sessions rm <id>`, `yxu sessions rename <id> <title>`. */
 async function sessionsCommand(argv: string[]) {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { all: { type: "boolean", short: "a" }, here: { type: "boolean" }, json: { type: "boolean" } } });
@@ -434,6 +481,7 @@ async function sessionsCommand(argv: string[]) {
   if (sub === "rm" || sub === "delete") {
     const s = findSession(id ?? die("usage: yxu sessions rm <id>"));
     deleteSession(s.id);
+    deleteTranscripts([s.conversation.sessionId, s.conversation.summary?.sessionId].filter((x): x is string => Boolean(x)));
     return console.log(`✓ deleted session ${s.id} (${s.title}); its tasks and branches are untouched`);
   }
   if (sub === "rename") {
@@ -1004,6 +1052,9 @@ try {
     }
     case "fix-ci":
       await fixCiCommand(rest);
+      break;
+    case "orchestrator":
+      await orchestratorCommand(rest);
       break;
     case "sessions":
       await sessionsCommand(rest);

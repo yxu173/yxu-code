@@ -80,6 +80,8 @@ export interface Decision {
 export interface ContextInfo {
   root: string;
   branch: string;
+  /** Orchestrator reasoning effort, when set. */
+  effort?: string;
   configSource: string;
   workflow: string;
   mode: string;
@@ -119,6 +121,8 @@ export interface State {
   compactingInBackground?: boolean;
   /** The agent being watched in the side panel (/watch). */
   watch?: WatchView;
+  /** This repo's recent sessions, offered on the welcome screen. */
+  recent?: { id: string; title: string; turns: number; ago: string }[];
   /** Slash-command palette, open while the draft starts with "/". */
   palette?: PaletteState;
   /** Rows scrolled up from the bottom; 0 follows new output. */

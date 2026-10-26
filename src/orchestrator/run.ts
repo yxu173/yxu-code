@@ -1,4 +1,4 @@
-import { query, type Options, type Query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import { getSessionInfo, query, type Options, type Query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { claudeExecutable, VERSION } from "../platform.ts";
 import { ORCHESTRATOR_BASE, prompt } from "../prompts.ts";
 import type { Asker } from "../permissions.ts";
@@ -10,6 +10,8 @@ import { Session, TaskOps, type OpsHooks } from "../ops.ts";
 import { newTaskId } from "../runner.ts";
 import { createYxuServer, SERVER_NAME, TOOL_NAMES } from "./tools.ts";
 import { buildRepoMap } from "../repomap.ts";
+import { recapPreamble, type TurnRecord } from "../conversation.ts";
+import { hasTranscript, transcriptStore } from "../transcripts.ts";
 
 /** Read-only built-ins so the orchestrator can study the code but never edit it. */
 export const READ_ONLY_TOOLS = ["Read", "Grep", "Glob"];
@@ -34,6 +36,8 @@ export interface RunOutcome {
   outputs?: Record<string, string>;
   /** Context-window usage at the end of the run, when Claude Code reported it. */
   context?: ContextUsage;
+  /** The conversation to resume was gone, so it was rebuilt from yxu's record of its turns. */
+  memoryRebuilt?: boolean;
   /**
    * A summary started during the run and not used by it: resolves with the compacted fork.
    * `tail` is what happened in the run after the fork (see Conversation.adopt).
@@ -206,6 +210,19 @@ export function jsonSchema(schema: z.ZodType): Record<string, unknown> {
   return rest;
 }
 
+/** Whether a conversation can be resumed: yxu has a copy, or Claude Code's history does. */
+export async function conversationExists(sessionId: string, root: string): Promise<boolean> {
+  if (hasTranscript(sessionId)) return true;
+  try {
+    // Claude Code's lookup can be slow (it scans its history); if it doesn't answer in time,
+    // assume the conversation is there rather than drop its memory.
+    const info = await Promise.race([getSessionInfo(sessionId, { dir: root }).then((i) => Boolean(i)), new Promise<boolean>((r) => setTimeout(() => r(true), 10_000).unref?.())]);
+    return info;
+  } catch {
+    return false;
+  }
+}
+
 export function sessionPath(root: string, runId: string) {
   return join(root, ".yxu", "sessions", `${runId}.json`);
 }
@@ -224,6 +241,8 @@ export async function runOrchestrator(opts: {
   resume?: string;
   /** Text before the goal (what happened since a summary that `resume` points at). */
   preamble?: string;
+  /** The conversation so far as yxu recorded it: used if `resume` can't be found anywhere. */
+  history?: TurnRecord[];
 }): Promise<RunOutcome> {
   const { cfg, workflow, root, render } = opts;
   if ((cfg.orchestrator.provider ?? "claude") !== "claude") {
@@ -244,6 +263,13 @@ export async function runOrchestrator(opts: {
   const mid = new MidRunCompactor(cfg, root, opts.abort.signal);
   let prompt = `${opts.preamble ?? ""}${opts.goal}`;
   let resume = opts.resume;
+  // Neither yxu's copy nor Claude Code's history has the conversation: start again from yxu's record.
+  let rebuilt = false;
+  if (resume && !(await conversationExists(resume, root))) {
+    resume = undefined;
+    prompt = `${recapPreamble(opts.history ?? [])}${opts.goal}`;
+    rebuilt = true;
+  }
   let spent = 0;
   let r: QueryResult;
   // One query, or several when a background summary takes over mid-run (see MidRunCompactor).
@@ -256,6 +282,7 @@ export async function runOrchestrator(opts: {
         maxBudgetUsd: budget === undefined ? undefined : Math.max(0.01, budget - spent - mid.costUsd),
         allowedTools: [...READ_ONLY_TOOLS, ...TOOL_NAMES],
         mcpServers: { [SERVER_NAME]: createYxuServer(ops, mid) },
+        sessionStore: transcriptStore(),
         systemPrompt: { type: "preset", preset: "claude_code", append: `${orchestratorPrompt(workflow, root)}\n\n${extra.text}` },
         resume,
         includePartialMessages: Boolean(render.textDelta),
@@ -295,6 +322,7 @@ export async function runOrchestrator(opts: {
     context: r.context,
     contextFiles: extra.files,
     backgroundSummary: opts.abort.signal.aborted ? (mid.cancel(), undefined) : mid.leftover(),
+    ...(rebuilt ? { memoryRebuilt: true } : {}),
   };
 }
 
@@ -440,7 +468,7 @@ export async function compactConversation(opts: {
 }): Promise<CompactResult> {
   const q = query({
     prompt: `/compact ${compactInstructions(opts.cfg, opts.instructions)}`,
-    options: { ...baseOptions(opts.cfg, opts.root, opts.abort), resume: opts.sessionId, ...(opts.fork ? { forkSession: true } : {}) },
+    options: { ...baseOptions(opts.cfg, opts.root, opts.abort), sessionStore: transcriptStore(), resume: opts.sessionId, ...(opts.fork ? { forkSession: true } : {}) },
   });
   const r = await drain(q, opts.render, opts.abort.signal);
   const compaction = r.compactions.at(-1);

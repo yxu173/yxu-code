@@ -15,7 +15,8 @@ import { getWorkflow, orchestratorLabel, type Config, type Workflow } from "../c
 import { branchFor, excludeYxuDir, tryGit } from "../git.ts";
 import { Session } from "../ops.ts";
 import { runPipeline } from "../orchestrator/pipeline.ts";
-import { Conversation } from "../conversation.ts";
+import { Conversation, type TurnRecord } from "../conversation.ts";
+import { fieldNamed, ORCHESTRATOR_FIELDS, orchestratorReport } from "../orchestrator-settings.ts";
 import { ago, samePath, describe as describeSession, findSession, listSessions, newSession, restoreTasks, saveSession, tildePath, titleFrom, type SessionFile } from "../sessions.ts";
 import { liveTask, liveTasks, onLiveChange, type LiveControl } from "../runner.ts";
 import { buildRepoMap, loadRepoMap, mapSlice, overviewText, type RepoMap } from "../repomap.ts";
@@ -23,7 +24,7 @@ import { fixCi, type FixCiOptions, type FixCiResult } from "../fix-ci.ts";
 import { issueGoal, resolveIssue } from "../github.ts";
 import { openPr, tagIssue, tagRun, type OpenPrOptions } from "../pr.ts";
 import type { IssueRef } from "../task-notes.ts";
-import { compactConversation, runOrchestrator, type OrchestratorRender, type RunOutcome } from "../orchestrator/run.ts";
+import { compactConversation, orchestratorPrompt, runOrchestrator, type OrchestratorRender, type RunOutcome } from "../orchestrator/run.ts";
 import { saveConfigPatch } from "../config-edit.ts";
 import { display, FILE_LAYERS, LAYERS, loadLayers, originOf, type FileLayer } from "../config-layers.ts";
 import { explainRows } from "../config-explain.ts";
@@ -57,6 +58,8 @@ export interface Engine {
     resume?: string;
     /** Text before the goal: what happened since a background summary that `resume` points at. */
     preamble?: string;
+    /** The conversation as yxu recorded it (rebuilds memory if `resume` is gone). */
+    history?: TurnRecord[];
     /** The live config (context/compact settings can change during a session). */
     cfg: Config;
     /** Pipeline inputs (from /run or a command). */
@@ -107,11 +110,11 @@ export function gitBackend(root: string, cfg: () => Config): TaskBackend {
 
 export function productionEngine(root: string): Engine {
   return {
-    run: ({ goal, workflow, render, abort, session, resume, preamble, cfg, inputs, gate }) =>
+    run: ({ goal, workflow, render, abort, session, resume, preamble, history, cfg, inputs, gate }) =>
       withRunHooks(cfg, root, { goal, workflow: workflow.name, session, signal: abort.signal }, () =>
         workflow.mode === "pipeline"
           ? runPipeline({ goal, cfg, workflow, root, render, abort, session, inputs, gate })
-          : runOrchestrator({ goal, cfg, workflow, root, render, abort, session, resume, preamble }),
+          : runOrchestrator({ goal, cfg, workflow, root, render, abort, session, resume, preamble, history }),
       ),
     compact: ({ cfg, sessionId, instructions, abort, render, fork }) => compactConversation({ cfg, root, sessionId, instructions, abort, render, fork }),
   };
@@ -198,6 +201,7 @@ export class App {
     if (!o.demo) this.refreshMap();
     this.saved = newSession(o.root, o.folder ?? o.root, this.conv.state);
     if (o.resume) this.openSession(o.resume);
+    this.loadRecent();
     const ui = this.cfg.ui;
     this.store.set({ panelOpen: ui.panel, layout: { sections: ui.panel_sections, footer: ui.footer } });
     try {
@@ -754,6 +758,7 @@ export class App {
     this.stopBackgroundCompaction();
     this.conv.reset();
     this.saved = newSession(this.o.root, this.o.folder ?? this.o.root, this.conv.state);
+    this.loadRecent();
     this.store.set({ remembering: false });
   }
 
@@ -1407,6 +1412,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
         session: this.session,
         resume: next.resume,
         preamble: next.preamble,
+        history: this.conv.state.log,
         cfg: this.cfg,
         inputs: run?.inputs,
         gate: (message, stepId) => this.askGate(message, stepId),
@@ -1439,6 +1445,9 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
 
     if (outcome) {
       s.state.cost.orchestrator += outcome.costUsd;
+      if (remember && outcome.memoryRebuilt) {
+        s.add({ kind: "notice", tone: "attention", text: "This session's conversation history was gone (neither yxu's copy nor Claude Code's had it), so the orchestrator continued from yxu's record of its turns." });
+      }
       if (remember) {
         this.conv.finish({ goal, finalText: outcome.finalText, sessionId: outcome.sdkSessionId, usedSummary: next.usesSummary });
         this.persist();
@@ -1937,6 +1946,20 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
 
   // ── sessions ──────────────────────────────────────────────────────────────
 
+  /** This repo's latest sessions, for the welcome screen. */
+  private loadRecent() {
+    if (this.o.demo) return;
+    try {
+      const recent = listSessions({ root: this.o.root })
+        .filter((x) => x.id !== this.saved.id)
+        .slice(0, 3)
+        .map((x) => ({ id: x.id, title: x.title, turns: x.conversation.turn, ago: ago(x.updatedAt) }));
+      this.store.set({ recent });
+    } catch {
+      // no session store: nothing to offer
+    }
+  }
+
   /** Save this session (no-op until its first turn). */
   private persist() {
     if (this.o.demo) return;
@@ -2006,6 +2029,35 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     this.saved.title = titleFrom(title);
     this.persist();
     this.note(`Session renamed: ${this.saved.title}`, "ok");
+  }
+
+  /** `/orchestrator [field value…] | prompt`: see and change how the orchestrator works. */
+  orchestratorCommand(args: string[]) {
+    const [name, value = "", ...more] = args;
+    if (!name) {
+      const unsaved = new Set([...this.dirty.keys()]);
+      return this.note(
+        [
+          `**Orchestrator** (workflow ${this.workflow.name}, ${this.workflow.mode})`,
+          ...orchestratorReport(this.cfg, this.o.root, { unsaved, markdown: true, sets: this.o.sets }),
+          "",
+          "Change one with `/orchestrator <field> <value>` (it applies from the next message), and `/save` (or `/save local|user`) to keep it.",
+        ].join("\n"),
+      );
+    }
+    if (name === "prompt") {
+      const text = `${orchestratorPrompt(this.workflow, this.o.root).trim()}\n\n${buildContextPrompt(this.cfg, this.o.root).text}`;
+      return this.note(`**The orchestrator's instructions** (added to Claude Code's own system prompt; workflow ${this.workflow.name})\n\n\`\`\`\n${text}\n\`\`\`\n\nAdd to them with \`/orchestrator instructions <text>\`, or with .yxu/prompts/orchestrator.md (\`mode: replace\` in its front matter replaces the built-in part).`);
+    }
+    const field = fieldNamed(name);
+    if (!field) return this.fail(`no orchestrator setting "${name}"`, `settings: ${ORCHESTRATOR_FIELDS.map((f) => f.name).join(", ")}, prompt`);
+    if (!value) return this.note(`**${field.name}**: \`${field.show(this.cfg)}\` — ${field.about}. Change: \`/orchestrator ${field.name} ${field.usage}\``);
+    const r = field.set(this.cfg, value, more);
+    if (typeof r === "string") return this.fail(r);
+    for (const st of r.sets) this.setConfig(st.path, st.value, st.yaml === undefined ? st.value : st.yaml);
+    if (r.fresh) this.resetConversation();
+    this.changed(r.message);
+    if (r.warning) this.note(r.warning, "attention");
   }
 
   private mapping?: Promise<RepoMap | undefined>;
@@ -2167,6 +2219,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
       workflow: this.workflow?.name ?? "default",
       mode: this.workflow?.mode ?? "auto",
       model: orchestratorLabel(cfg),
+      effort: cfg.orchestrator.effort,
       agents: (this.workflow?.allowed_agents ?? Object.keys(cfg.agents)).map((name) => ({ name, cli: cfg.agents[name]!.cli, model: cfg.agents[name]!.model })),
       concurrency: cfg.settings.concurrency,
       verify: cfg.settings.verify,

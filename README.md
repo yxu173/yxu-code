@@ -293,6 +293,48 @@ Changes are for the current session until you `/save`. `/status` shows how many 
 Task ids can be the short suffix shown in the panel. The palette, `/help`, and execution all
 come from one registry (`src/tui/commands.ts`).
 
+### The orchestrator's settings
+
+`/orchestrator` (or `yxu orchestrator`) shows how the orchestrator works and where each setting
+comes from; change any of them in place:
+
+| setting | | |
+|---|---|---|
+| `model` | `opus`, `sonnet`, `haiku`, a model id | the Claude model that plans, delegates and reviews |
+| `effort` | `low` … `max`, `default` | how hard it thinks |
+| `budget` | dollars, `off` | stop a run when it has spent this much |
+| `turns` | a number, `off` | turn limit per run |
+| `provider` | `claude`, `agent <name>`, a plugin's | who answers pipeline plan and review steps (auto workflows need claude) |
+| `user-settings` | `on`, `off` | load your global Claude settings, plugins and MCP servers |
+| `instructions` | text, `clear` | standing instructions it follows on every run |
+
+```
+/orchestrator effort high
+/orchestrator instructions Never touch migrations/ and keep PRs small
+/orchestrator provider agent planner     # pipelines plan and review with one of your agents
+/orchestrator prompt                     # its full instructions, as it gets them
+/save                                    # keep the changes (yxu.yaml; /save local: only you)
+```
+
+From the command line: `yxu orchestrator set effort high [--local|--user]`, `yxu orchestrator unset
+effort`, `yxu orchestrator prompt`. Its built-in instructions can be extended or replaced with
+`.yxu/prompts/orchestrator.md` (see `yxu prompts`).
+
+### Chores in your checkout
+
+Ask for repository chores in plain words, for example "push everything except the tasks folder
+to main-dev" or "stash this and switch to main". The orchestrator runs the git (or install)
+commands in your own checkout, and **asks you before each one**, showing the command and why:
+
+```
+△ orchestrator (in your checkout) wants to run `git commit -m "Add rail and docs"` — Commit the staged files
+  [y] once   [a] allow for this session   [n] no
+```
+
+Read-only git commands (`git status`, `diff`, `log`, …) run without asking. It never
+force-pushes or rewrites pushed history. Code changes still go to subagents in their own
+worktrees. `settings.checkout_commands: allow` stops the questions; `off` turns it off.
+
 ### Sessions
 
 Every conversation with yxu is a session, saved for you (not in the repo) in
@@ -315,6 +357,13 @@ yxu sessions rename <id> "Login work" · yxu sessions rm <id>
 its conversations per directory) and opens the interface. Sessions are titled by their first
 message; in the interface, `/sessions [all|here]` lists them, `/resume <id>` switches to another
 of this repo's, `/rename` names this one, and `/new` starts a new one.
+
+Resuming doesn't depend on Claude Code's own history. yxu keeps its own copy of every
+orchestrator conversation in `~/.local/share/yxu/transcripts` (Claude Code writes each entry there
+as well), and resumes from it. If you clear `~/.claude`, sessions still resume with their full
+memory. If neither copy exists (say, a session from before this), the orchestrator starts a new
+conversation with a recap of the session's turns as yxu recorded them, and tells you so.
+`yxu sessions rm` deletes a session's transcripts too.
 
 ### Watching an agent and stepping in
 

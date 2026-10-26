@@ -61,5 +61,6 @@ export function policy(profile: AgentProfile, req: PermissionRequest, always: Se
 
 export function describe(req: PermissionRequest): string {
   const what = req.command ? `\`${req.command}\`` : req.paths.length ? req.paths.join(", ") : req.title;
-  return `${req.agent} wants to ${req.kind === "execute" ? "run" : req.kind} ${what}`;
+  const why = req.command && req.title && req.title !== req.command ? ` — ${req.title}` : "";
+  return `${req.agent} wants to ${req.kind === "execute" ? "run" : req.kind} ${what}${why}`;
 }

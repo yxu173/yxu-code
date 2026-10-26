@@ -6,7 +6,7 @@ import { loadRepoMap, mapSlice } from "../repomap.ts";
 export { Session, type OpsHooks as ToolHooks } from "../ops.ts";
 
 export const SERVER_NAME = "yxu";
-export const TOOL_NAMES = ["list_agents", "delegate", "delegate_parallel", "combine", "verify", "get_diff", "discard", "find_code"].map(
+export const TOOL_NAMES = ["list_agents", "delegate", "delegate_parallel", "combine", "verify", "get_diff", "discard", "find_code", "run_in_checkout"].map(
   (t) => `mcp__${SERVER_NAME}__${t}`,
 );
 
@@ -152,9 +152,26 @@ export function createYxuServer(ops: TaskOps, watch?: ToolWatch) {
     }),
   );
 
+  const runInCheckout = tool(
+    "run_in_checkout",
+    "Run a shell command in the USER'S OWN checkout (not a task worktree) after the user approves it: repository chores they ask for, " +
+      "such as git add / commit / push / pull / stash / switch, or installing dependencies. Read-only git commands (status, diff, log…) run without asking. " +
+      "Never use it to change code (delegate that), never force-push or rewrite pushed history, and never stage secrets. One step per call.",
+    {
+      command: z.string().min(1).describe("The shell command, run from the repository root"),
+      reason: z.string().optional().describe("One line the user sees when approving, e.g. 'commit everything except tasks/coder-zero-to-production'"),
+    },
+    safe(async ({ command, reason }) => {
+      const r = await ops.checkout(command, reason);
+      if (r.denied) return text(`Not run (${r.denied}): \`${command}\`. Don't retry it; tell the user, or give them the command to run themselves.`);
+      const v = r.result!;
+      return text(`\`${command}\` ${v.ok ? "succeeded" : v.timedOut ? "timed out" : `failed (exit ${v.exitCode})`} in ${(v.durationMs / 1000).toFixed(1)}s\n${v.output.slice(-6000) || "(no output)"}`);
+    }),
+  );
+
   return createSdkMcpServer({
     name: SERVER_NAME,
     version: "0.3.0",
-    tools: [listAgents, delegate, delegateParallel, combine, verify, getDiff, discard, findCode],
+    tools: [listAgents, delegate, delegateParallel, combine, verify, getDiff, discard, findCode, runInCheckout],
   });
 }
