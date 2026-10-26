@@ -12,6 +12,7 @@ import { Session, TaskOps } from "./ops.ts";
 import { runPipeline } from "./orchestrator/pipeline.ts";
 import { compactConversation, orchestratorPrompt, runOrchestrator, sessionPath, type OrchestratorRender, type RunOutcome } from "./orchestrator/run.ts";
 import { Conversation } from "./conversation.ts";
+import { deleteTranscripts } from "./transcripts.ts";
 import { deleteSession, samePath, describe as describeSession, findSession, listSessions, newSession, renameSession, saveSession, tildePath, titleFrom, type SessionFile } from "./sessions.ts";
 import { issueGoal, resolveIssue, type Issue } from "./github.ts";
 import { defaultBase, draftPr, openPr, recentTasks, tagIssue, tagRun } from "./pr.ts";
@@ -351,10 +352,11 @@ async function run(argv: string[]) {
     const outcome = await withRunHooks(cfg, root, { goal, workflow: workflow.name, session, signal: ac.signal }, () =>
       workflow.mode === "pipeline"
         ? runPipeline({ goal, cfg, workflow, root, abort: ac, render: r.render, inputs, gate: cliGate(values.yes), session })
-        : runOrchestrator({ goal, cfg, workflow, root, abort: ac, render: r.render, session, resume: next.resume, preamble: next.preamble }),
+        : runOrchestrator({ goal, cfg, workflow, root, abort: ac, render: r.render, session, resume: next.resume, preamble: next.preamble, history: conv.state.log }),
     );
     if (issue) tagIssue(root, outcome.session.tasks.keys(), issue);
     if (outcome.ok) tagRun(root, outcome.session.tasks.keys(), { goal: issue ? `${issue.title} (${issue.id})` : goal, report: outcome.finalText });
+    if (outcome.memoryRebuilt) console.log(dim("(this session's conversation history was gone; continued from yxu's record of its turns)\n"));
     if (!outcome.cancelled) await rememberSession(root, cfg, conv, file, { goal: issue ? `${issue.title} (${issue.id})` : goal, outcome, auto, workflow: workflow.name, usedSummary: next.usesSummary, continuing: Boolean(saved) });
 
     // The final report is usually the last assistant message, already printed above.
@@ -479,6 +481,7 @@ async function sessionsCommand(argv: string[]) {
   if (sub === "rm" || sub === "delete") {
     const s = findSession(id ?? die("usage: yxu sessions rm <id>"));
     deleteSession(s.id);
+    deleteTranscripts([s.conversation.sessionId, s.conversation.summary?.sessionId].filter((x): x is string => Boolean(x)));
     return console.log(`✓ deleted session ${s.id} (${s.title}); its tasks and branches are untouched`);
   }
   if (sub === "rename") {
