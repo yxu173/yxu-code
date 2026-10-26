@@ -9,6 +9,7 @@ import { buildContextPrompt, worthCompacting, compactInstructions, compactSettin
 import { Session, TaskOps, type OpsHooks } from "../ops.ts";
 import { newTaskId } from "../runner.ts";
 import { createYxuServer, SERVER_NAME, TOOL_NAMES } from "./tools.ts";
+import { buildRepoMap } from "../repomap.ts";
 
 /** Read-only built-ins so the orchestrator can study the code but never edit it. */
 export const READ_ONLY_TOOLS = ["Read", "Grep", "Glob"];
@@ -238,6 +239,7 @@ export async function runOrchestrator(opts: {
     ask: render.ask,
   });
 
+  if (cfg.context.repo_map) await buildRepoMap(root).catch(() => undefined); // incremental: only changed files are read
   const extra = buildContextPrompt(cfg, root);
   const mid = new MidRunCompactor(cfg, root, opts.abort.signal);
   let prompt = `${opts.preamble ?? ""}${opts.goal}`;

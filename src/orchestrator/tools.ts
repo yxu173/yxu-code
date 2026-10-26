@@ -1,11 +1,12 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { TaskOps } from "../ops.ts";
+import { loadRepoMap, mapSlice } from "../repomap.ts";
 
 export { Session, type OpsHooks as ToolHooks } from "../ops.ts";
 
 export const SERVER_NAME = "yxu";
-export const TOOL_NAMES = ["list_agents", "delegate", "delegate_parallel", "combine", "verify", "get_diff", "discard"].map(
+export const TOOL_NAMES = ["list_agents", "delegate", "delegate_parallel", "combine", "verify", "get_diff", "discard", "find_code"].map(
   (t) => `mcp__${SERVER_NAME}__${t}`,
 );
 
@@ -138,9 +139,22 @@ export function createYxuServer(ops: TaskOps, watch?: ToolWatch) {
     }),
   );
 
+  const findCode = tool(
+    "find_code",
+    "Search the repo map (files, their symbols with line numbers, tests, imports) for what a query names. Instant and free: " +
+      "use it to find where something lives before reading files or delegating discovery.",
+    { query: z.string().min(2).describe("Names, words or paths, e.g. 'validateConfig compact window' or 'login session cookie'") },
+    safe(async ({ query }) => {
+      const map = loadRepoMap(ops.root);
+      if (!map) return text("No repo map yet (it is built at the start of a run); read the files instead.");
+      const slice = mapSlice(map, query, { chars: 3000, noOverview: true });
+      return text(slice.includes("Likely relevant") ? slice : `Nothing in the repo map matches "${query}". Try other names, or Grep.`);
+    }),
+  );
+
   return createSdkMcpServer({
     name: SERVER_NAME,
     version: "0.3.0",
-    tools: [listAgents, delegate, delegateParallel, combine, verify, getDiff, discard],
+    tools: [listAgents, delegate, delegateParallel, combine, verify, getDiff, discard, findCode],
   });
 }

@@ -14,9 +14,10 @@ import { branchFor, excludeYxuDir, tryGit } from "../git.ts";
 import { Session } from "../ops.ts";
 import { runPipeline } from "../orchestrator/pipeline.ts";
 import { Conversation } from "../conversation.ts";
+import { buildRepoMap, loadRepoMap, mapSlice, overviewText, type RepoMap } from "../repomap.ts";
 import { fixCi, type FixCiOptions, type FixCiResult } from "../fix-ci.ts";
 import { issueGoal, resolveIssue } from "../github.ts";
-import { openPr, tagIssue, type OpenPrOptions } from "../pr.ts";
+import { openPr, tagIssue, tagRun, type OpenPrOptions } from "../pr.ts";
 import type { IssueRef } from "../task-notes.ts";
 import { compactConversation, runOrchestrator, type OrchestratorRender, type RunOutcome } from "../orchestrator/run.ts";
 import { saveConfigPatch } from "../config-edit.ts";
@@ -184,6 +185,7 @@ export class App {
     this.store = new Store(this.contextInfo(), { demo: o.demo, panelOpen: true });
     this.editor = new Editor(this.loadHistory());
     this.store.subscribe(() => this.requestRender());
+    if (!o.demo) this.refreshMap();
     const ui = this.cfg.ui;
     this.store.set({ panelOpen: ui.panel, layout: { sections: ui.panel_sections, footer: ui.footer } });
     try {
@@ -1392,12 +1394,12 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     this.markStragglers();
     s.set({ activeSlots: 0 });
     this.syncTasks();
-    if (issue) {
-      try {
-        tagIssue(this.o.root, [...this.session.tasks.keys()].filter((id) => !before.has(id)), issue);
-      } catch {
-        // best effort: only the PR's "Closes" line depends on it
-      }
+    try {
+      const made = [...this.session.tasks.keys()].filter((id) => !before.has(id));
+      if (issue) tagIssue(this.o.root, made, issue);
+      if (outcome?.ok) tagRun(this.o.root, made, { goal: issue ? `${issue.title} (${issue.id})` : goal, report: outcome.finalText });
+    } catch {
+      // best effort: only pull request descriptions depend on it
     }
 
     const cancelled = this.abort.signal.aborted || outcome?.cancelled;
@@ -1787,6 +1789,27 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     if (!this.offerDecision() && this.store.state.status !== "fault") this.settle();
   }
 
+  private mapping?: Promise<RepoMap | undefined>;
+
+  /** Bring the repo map up to date in the background (only changed files are read). */
+  refreshMap(): Promise<RepoMap | undefined> {
+    if (!this.cfg.context.repo_map) return Promise.resolve(undefined);
+    this.mapping ??= buildRepoMap(this.o.root, { yieldEvery: 200 })
+      .catch(() => undefined)
+      .finally(() => (this.mapping = undefined));
+    return this.mapping;
+  }
+
+  /** `/map [query]`: the overview, or what the map finds for a query. */
+  async showMap(query: string) {
+    const map = (await this.refreshMap()) ?? loadRepoMap(this.o.root);
+    if (!map) return this.fail(this.cfg.context.repo_map ? "no repo map: this repository has no commits yet" : "the repo map is off (context.repo_map)");
+    const n = Object.keys(map.files).length;
+    if (!query.trim()) return this.note(`**Repo map** — ${n} files at ${map.head.slice(0, 8)}, shared with every agent\n\n${overviewText(map)}\n\n\`/map <words>\` shows what a task about them would get.`);
+    const slice = mapSlice(map, query, { chars: 4000, noOverview: true });
+    this.note(slice.includes("Likely relevant") ? slice.replace(/^## .*\n/, `**Repo map** for "${query}"\n`) : `Nothing in the repo map matches "${query}".`);
+  }
+
   /** `/pr [task] [--draft] [--base B] [--title …]`, or [p] at a decision: push and open a pull request. */
   pullRequest(id: string, o: OpenPrOptions = {}) {
     const gh = this.backend.github;
@@ -1865,6 +1888,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     const r = await pending;
     if (pending instanceof Promise && this.store.state.status === "working") this.store.setStatus("ready");
     if (r.ok) {
+      this.refreshMap(); // HEAD moved
       this.store.add({ kind: "notice", tone: "ok", text: `Applied. ${r.message}.` });
       for (const t of this.store.state.tasks) if (t.taskId === id) this.store.upsertTask({ ...t, state: "applied", pending: false });
       this.discardTracked(id, true);

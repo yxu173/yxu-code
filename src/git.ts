@@ -41,7 +41,7 @@ export const branchFor = (taskId: string) => `yxu/${taskId}`;
 export const worktreeFor = (root: string, taskId: string) => join(root, ".yxu", "worktrees", taskId);
 
 /** yxu's runtime files. The rest of .yxu/ (workflows, commands, prompts) is meant to be committed. */
-export const RUNTIME_PATHS = [".yxu/worktrees/", ".yxu/runs/", ".yxu/sessions/", ".yxu/history.jsonl", ".yxu/conversation.json"];
+export const RUNTIME_PATHS = [".yxu/worktrees/", ".yxu/runs/", ".yxu/sessions/", ".yxu/history.jsonl", ".yxu/conversation.json", ".yxu/repomap.json"];
 
 /** Keep yxu's runtime files out of the user's `git status` without touching their .gitignore. */
 export function excludeYxuDir(root: string) {

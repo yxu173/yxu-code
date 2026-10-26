@@ -519,6 +519,13 @@ export const COMMANDS: Command[] = [
     run: (app, [id]) => app.taskAction("apply", id),
   },
   {
+    name: "map",
+    usage: "[words]",
+    description: "The repo map agents share: its overview, or what it finds for some words",
+    group: "context",
+    run: (app, args) => void app.showMap(args.join(" ")),
+  },
+  {
     name: "pr",
     usage: "<task> [--draft] [--base branch] [--title text]",
     description: "Push a task and open a pull request (agents' work, checks, reviews, issue)",

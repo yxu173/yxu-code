@@ -21,7 +21,9 @@ export interface IssueRef {
 export type TaskNote =
   | { kind: "verify"; command: string; ok: boolean; exitCode: number | null; durationMs: number; tail: string; at: string }
   | { kind: "review"; by: string; approved?: boolean; summary: string; taskId?: string; at: string }
-  | { kind: "issue"; issue: IssueRef; at: string };
+  | { kind: "issue"; issue: IssueRef; at: string }
+  /** The run that made the task: what the user asked, and the orchestrator's final report. */
+  | { kind: "run"; goal: string; report: string; at: string };
 
 type NewNote = TaskNote extends infer N ? (N extends TaskNote ? Omit<N, "at"> : never) : never;
 
@@ -40,7 +42,7 @@ export function readNotes(root: string, taskId: string): TaskNote[] {
 export function addNote(root: string, taskId: string, note: NewNote) {
   const notes = readNotes(root, taskId);
   // One issue per task.
-  if (note.kind === "issue" && notes.some((n) => n.kind === "issue")) return;
+  if ((note.kind === "issue" || note.kind === "run") && notes.some((n) => n.kind === note.kind)) return;
   notes.push({ ...note, at: new Date().toISOString() } as TaskNote);
   mkdirSync(runDir(root, taskId), { recursive: true });
   writeFileSync(file(root, taskId), JSON.stringify(notes, null, 2));

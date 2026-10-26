@@ -61,14 +61,17 @@ export function draftPr(root: string, taskId: string, opts: { title?: string } =
   const issue = notes.find((n): n is Extract<TaskNote, { kind: "issue" }> => n.kind === "issue")?.issue;
 
   const work = chain.filter((r) => r.agent !== "combine" && r.filesChanged.length);
-  const title = opts.title ?? (issue ? issue.title : firstLine(taskText(work.at(-1) ?? head), 72) || `Changes by yxu (${taskId})`);
+  // The latest run in the chain: its goal names the PR, its report summarizes it.
+  const run = [...notes].reverse().find((n): n is Extract<TaskNote, { kind: "run" }> => n.kind === "run");
+  const title = opts.title ?? (issue ? issue.title : run ? firstLine(run.goal, 72) : firstLine(taskText(work.at(-1) ?? head), 72) || `Changes by yxu (${taskId})`);
 
   const lines: string[] = [];
   if (issue?.closes) lines.push(`Closes ${issue.closes}`, "");
   else if (issue) lines.push(`For ${issue.source} issue ${issue.id}${issue.url ? ` (${issue.url})` : ""}`, "");
 
   const files = [...new Set(chain.flatMap((r) => r.filesChanged))];
-  lines.push("## Summary", firstParagraph(head.summary) || `Changes to ${files.length} file(s).`, "");
+  const report = run?.report.trim() ? clipLines(run.report, 20) : "";
+  lines.push("## Summary", report || firstParagraph(head.summary) || `Changes to ${files.length} file(s).`, "");
 
   lines.push("## What each agent did");
   for (const r of work) {
@@ -115,6 +118,11 @@ export function draftPr(root: string, taskId: string, opts: { title?: string } =
   return { title, body: lines.join("\n"), issue, branch: `yxu/${slug || "changes"}-${taskId.slice(-4)}` };
 }
 
+function clipLines(s: string, n: number): string {
+  const lines = s.trim().split("\n");
+  return lines.length > n ? `${lines.slice(0, n).join("\n")}\n…` : lines.join("\n");
+}
+
 function firstParagraph(s: string): string {
   return (s.trim().split(/\n\s*\n/)[0] ?? "").trim();
 }
@@ -154,6 +162,11 @@ export function defaultBase(root: string, remote = "origin"): string {
   } catch {
     return "main";
   }
+}
+
+/** Record the run that made these tasks: the goal names a PR, the report summarizes it. */
+export function tagRun(root: string, taskIds: Iterable<string>, run: { goal: string; report: string }) {
+  for (const id of taskIds) addNote(root, id, { kind: "run", goal: run.goal, report: run.report });
 }
 
 /** Record that a run's tasks were for an issue (yxu pr links it). */

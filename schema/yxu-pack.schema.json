@@ -368,7 +368,9 @@
             "memory": true,
             "project_instructions": true,
             "include": [],
-            "include_max_chars": 20000
+            "include_max_chars": 20000,
+            "repo_map": true,
+            "repo_map_chars": 4000
           },
           "type": "object",
           "properties": {
@@ -400,6 +402,18 @@
               "type": "integer",
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
+            },
+            "repo_map": {
+              "default": true,
+              "description": "Share a map of the repo (files, symbols, tests, conventions) with every agent: the relevant part goes before each task, the overview to the orchestrator",
+              "type": "boolean"
+            },
+            "repo_map_chars": {
+              "default": 4000,
+              "description": "Characters of the repo map put before each subagent task",
+              "type": "integer",
+              "minimum": 500,
+              "maximum": 50000
             }
           }
         },

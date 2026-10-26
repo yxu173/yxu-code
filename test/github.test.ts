@@ -7,7 +7,7 @@ import { fixCi } from "../src/fix-ci.ts";
 import { checkState, fetchGithubIssue, issueGoal, mentionedFiles, parseGithubIssue } from "../src/github.ts";
 import { branchFor, git, YXU_IDENTITY } from "../src/git.ts";
 import { Session, TaskOps } from "../src/ops.ts";
-import { draftPr, openPr, tagIssue } from "../src/pr.ts";
+import { draftPr, openPr, tagIssue, tagRun } from "../src/pr.ts";
 import { readNotes } from "../src/task-notes.ts";
 import { fakeCli, pathWith } from "./helpers.ts";
 
@@ -127,6 +127,16 @@ describe("yxu pr", () => {
     expect(git(remote, "rev-parse", `refs/heads/${d.branch}`)).toBe(git(root, "rev-parse", branchFor(t.taskId)));
     expect(readFileSync(join(fix, "calls"), "utf8")).toContain(`pr create --base main --head ${d.branch} --title Crash on empty input --body-file - --draft`);
     expect(readFileSync(join(fix, "body.md"), "utf8")).toBe(d.body);
+  }, 30_000);
+
+  test("without an issue, the run's goal is the title and its report the summary", async () => {
+    const ops = new TaskOps(cfg(), root, new Session(), {});
+    const t = await ops.delegate("coder", "In this repo (ES modules…): WRITE a.txt hello");
+    tagRun(root, [t.taskId], { goal: "Add a greeting file\nwith more detail", report: "Added a.txt with a greeting.\n\n- a.txt: new" });
+    const d = draftPr(root, t.taskId);
+    expect(d.title).toBe("Add a greeting file");
+    expect(d.body).toStartWith("## Summary\nAdded a.txt with a greeting.\n\n- a.txt: new\n");
+    expect(d.body).toContain("No checks were run by yxu.");
   }, 30_000);
 
   test("refuses a task without changes", async () => {

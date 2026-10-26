@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { addNote } from "../task-notes.ts";
+import { buildRepoMap } from "../repomap.ts";
 import type { Config, Step, Workflow } from "../config.ts";
 import { condition, render, type Scope } from "../expr.ts";
 import { branchFor } from "../git.ts";
@@ -115,6 +116,7 @@ export async function runPipeline(opts: PipelineOptions): Promise<RunOutcome> {
   const { cfg, workflow, root, render: ui, abort } = opts;
   const session = opts.session ?? new Session();
   const runId = `run-${newTaskId()}`;
+  if (cfg.context.repo_map) await buildRepoMap(root).catch(() => undefined); // incremental: only changed files are read
   const ops = new TaskOps(cfg, root, session, {
     allowedAgents: workflow.allowed_agents,
     signal: abort.signal,
