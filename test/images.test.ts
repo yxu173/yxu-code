@@ -51,7 +51,8 @@ describe("images", () => {
     const found = (t: string) => findImagePaths(t, dir).map((f) => f.path);
     expect(found(`don't miss '${p}' please`)).toEqual([p]); // an apostrophe doesn't open a quote
     expect(found(`see "${p}"`)).toEqual([p]);
-    expect(found(`see ${p.replace(/ /g, "\\ ")}`)).toEqual([p]);
+    // Unix terminals escape spaces in dropped paths (on Windows the backslash is the separator; it quotes instead).
+    if (process.platform !== "win32") expect(found(`see ${p.replace(/ /g, "\\ ")}`)).toEqual([p]);
     expect(found(`file://${encodeURI(p)}`)).toEqual([p]);
     expect(found("look at './shot one.png'")).toEqual([p]);
     expect(found(`${join(dir, "notes.txt")} and /nope/x.png`)).toEqual([]);
@@ -147,7 +148,7 @@ describe("images in the interface", () => {
     app.input("/image ./shot one.png\r");
     app.input("/image clear\r");
     expect(app.store.state.attachments).toBeUndefined();
-    expect(existsSync(join(dir, ".yxu", "images"))).toBe(true);
+    if (process.platform === "linux") expect(existsSync(join(dir, ".yxu", "images"))).toBe(true); // where ctrl+v put its image
     app.dispose();
   });
 });
