@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { addNote } from "../task-notes.ts";
+import type { Attachment } from "../images.ts";
 import { buildRepoMap } from "../repomap.ts";
 import type { Config, Step, Workflow } from "../config.ts";
 import { condition, render, type Scope } from "../expr.ts";
@@ -110,6 +111,8 @@ export interface PipelineOptions {
   askImpl?: AskFn;
   /** Reuse a task session across turns (interactive UIs). */
   session?: Session;
+  /** Images from the user: the plan step sees them; every step's goal lists their paths. */
+  images?: Attachment[];
 }
 
 export async function runPipeline(opts: PipelineOptions): Promise<RunOutcome> {
@@ -131,10 +134,10 @@ export async function runPipeline(opts: PipelineOptions): Promise<RunOutcome> {
     .map((n) => `- ${n}: ${cfg.agents[n]!.cli}/${cfg.agents[n]!.model ?? "default"}${cfg.agents[n]!.permission === "plan" ? " (read-only: reports, makes no changes)" : ""}${cfg.agents[n]!.description ? ` — ${cfg.agents[n]!.description}` : ""}`)
     .join("\n");
 
-  const ask = async <T extends z.ZodType>(system: string, user: string, schema: T, head?: string) => {
+  const ask = async <T extends z.ZodType>(system: string, user: string, schema: T, head?: string, images?: Attachment[]) => {
     const budget = cfg.orchestrator.max_budget_usd;
     if (budget !== undefined && costUsd >= budget) throw new StepFailed(`orchestrator budget $${budget} used up`);
-    const r = await (opts.askImpl ?? askProvider)({ cfg, root, abort, system, prompt: user, schema, render: ui, head });
+    const r = await (opts.askImpl ?? askProvider)({ cfg, root, abort, system, prompt: user, schema, render: ui, head, images });
     costUsd += r.costUsd;
     return r.value;
   };
@@ -226,6 +229,8 @@ ${agentList}
 ${wfInstructions}${step.instructions ? `\nStep instructions:\n${render(step.instructions, scope)}` : ""}`,
           `Goal: ${goal}`,
           PlanOutput,
+          undefined,
+          opts.images,
         );
         plan.tasks = plan.tasks.slice(0, step.max_tasks);
         return { ok: true, summary: plan.summary, output: plan.tasks.map((t, i) => `${i + 1}. ${t.title}`).join("\n"), tasks: plan.tasks };
@@ -405,7 +410,9 @@ ${wfInstructions}${step.instructions ? `\nStep instructions:\n${render(step.inst
   const renderOutputs = (wf: Workflow, scope: Scope) =>
     Object.fromEntries(Object.entries(wf.outputs ?? {}).map(([k, tpl]) => [k, render(tpl, scope)]));
 
-  const top = newFrame(workflow, opts.goal, resolveInputs(workflow, opts.inputs), 0);
+  // Steps and subagents can't see images: the goal says where they are.
+  const goalText = opts.images?.length ? `${opts.goal}\n\n(Images from the user, for agents that can open them: ${opts.images.map((i) => i.path).join(", ")})` : opts.goal;
+  const top = newFrame(workflow, goalText, resolveInputs(workflow, opts.inputs), 0);
   const cur: Cursor = {};
   let ok = true;
   let outputs: Record<string, string> = {};

@@ -12,6 +12,7 @@ import { Session, TaskOps } from "./ops.ts";
 import { runPipeline } from "./orchestrator/pipeline.ts";
 import { compactConversation, orchestratorPrompt, runOrchestrator, sessionPath, type OrchestratorRender, type RunOutcome } from "./orchestrator/run.ts";
 import { Conversation } from "./conversation.ts";
+import { attach, findImagePaths, size as imageSize, type Attachment } from "./images.ts";
 import { deleteTranscripts } from "./transcripts.ts";
 import { deleteSession, samePath, describe as describeSession, findSession, listSessions, newSession, renameSession, saveSession, tildePath, titleFrom, type SessionFile } from "./sessions.ts";
 import { issueGoal, resolveIssue, type Issue } from "./github.ts";
@@ -42,7 +43,8 @@ Usage:
                             pipelines take --input values, --yes approves their gates;
                             -c (--continue) continues this repo's latest session,
                             -s <id> (--session) a given one;
-                            --issue 123|owner/repo#123|URL|linear:ENG-12 works on an issue
+                            --issue 123|owner/repo#123|URL|linear:ENG-12 works on an issue;
+                            --image <file> (repeatable) sends images with the goal
   yxu orchestrator [prompt] | set <setting> <value> [--local|--user] | unset <setting>
                             how the orchestrator works: model, effort, budget, turns,
                             provider, agent, user-settings, instructions; prompt shows its instructions
@@ -253,6 +255,7 @@ async function run(argv: string[]) {
       continue: { type: "boolean", short: "c" },
       session: { type: "string", short: "s" },
       issue: { type: "string" },
+      image: { type: "string", multiple: true },
     },
   });
   let goal = positionals.join(" ").trim();
@@ -313,6 +316,15 @@ async function run(argv: string[]) {
     goal = issueGoal(root, issue, goal);
   }
   if (!goal && workflow.mode !== "pipeline") die('missing goal, e.g. yxu run "add a --verbose flag" (or --issue 123)');
+  // Images: --image files, and image files the goal names.
+  const images: Attachment[] = [];
+  try {
+    for (const p of values.image ?? []) images.push(attach(p));
+    for (const f of findImagePaths(goal, process.cwd())) if (!images.some((i) => i.path === f.path)) images.push(attach(f.path));
+  } catch (e) {
+    die((e as Error).message);
+  }
+  if (images.length) console.log(dim(`with ${images.map((i) => `${i.name} (${imageSize(i.bytes)})`).join(", ")}`));
   if (Object.keys(inputs).length && workflow.mode !== "pipeline") die(`--input is for pipeline workflows; "${workflow.name}" is ${workflow.mode}`);
   const outcome = await execute(goal, workflow, inputs);
   process.exit(outcome.ok ? 0 : 2);
@@ -351,8 +363,8 @@ async function run(argv: string[]) {
     if (next.usesSummary) console.log(dim("(continuing from a background summary of the conversation)\n"));
     const outcome = await withRunHooks(cfg, root, { goal, workflow: workflow.name, session, signal: ac.signal }, () =>
       workflow.mode === "pipeline"
-        ? runPipeline({ goal, cfg, workflow, root, abort: ac, render: r.render, inputs, gate: cliGate(values.yes), session })
-        : runOrchestrator({ goal, cfg, workflow, root, abort: ac, render: r.render, session, resume: next.resume, preamble: next.preamble, history: conv.state.log }),
+        ? runPipeline({ goal, cfg, workflow, root, abort: ac, render: r.render, inputs, gate: cliGate(values.yes), session, images })
+        : runOrchestrator({ goal, cfg, workflow, root, abort: ac, render: r.render, session, resume: next.resume, preamble: next.preamble, history: conv.state.log, images }),
     );
     if (issue) tagIssue(root, outcome.session.tasks.keys(), issue);
     if (outcome.ok) tagRun(root, outcome.session.tasks.keys(), { goal: issue ? `${issue.title} (${issue.id})` : goal, report: outcome.finalText });

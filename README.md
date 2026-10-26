@@ -365,6 +365,22 @@ memory. If neither copy exists (say, a session from before this), the orchestrat
 conversation with a recap of the session's turns as yxu recorded them, and tells you so.
 `yxu sessions rm` deletes a session's transcripts too.
 
+### Images
+
+Give yxu a screenshot, a mockup or an error dialog with your message:
+
+- **ctrl+v** attaches the image on your clipboard (Linux: `wl-paste` or `xclip`; macOS: `pngpaste`
+  or the built-in AppleScript; Windows: PowerShell).
+- **Drag an image file** into the terminal, or type its path. Paths in your message
+  (`~/shot.png`, `'/tmp/a b.png'`, `file://…`) are attached, and replaced by `[image: name]`.
+- **`/image <path>`** attaches one; `/image clear` removes them. From scripts:
+  `yxu run --image shot.png "make the header match"`.
+
+Attached images show above the message box, and under your message once sent. The orchestrator
+sees them. Subagents can't see the conversation, so it describes what matters in their tasks and
+gives them the image paths; agents whose model reads images (Claude, for example) can open them.
+PNG, JPEG, GIF and WebP up to 5 MB each. Pasted images are kept in `.yxu/images`.
+
 ### Watching an agent and stepping in
 
 `/watch` opens a wider side panel on a running agent. It shows the agent's tool calls as they

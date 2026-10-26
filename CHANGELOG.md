@@ -3,6 +3,14 @@
 All notable changes are listed here. The project uses [semantic versioning](https://semver.org);
 before 1.0, minor versions may change the config format (with migration notes here).
 
+## Unreleased
+
+### Added
+- Images: ctrl+v attaches the clipboard's image, dragging an image file in (or naming its path)
+  attaches it, `/image <path|clear>`, and `yxu run --image <file>`. The orchestrator sees them with
+  your message; a pipeline's plan step sees them too; subagents get their paths (and a description
+  in their task). PNG, JPEG, GIF, WebP up to 5 MB.
+
 ## 0.1.2 (2026-10-26)
 
 ### Added

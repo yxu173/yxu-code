@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
+import { homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { which } from "../platform.ts";
 import { applyTask, applyWithHooks, diffStat, discardTask, type ActionResult } from "../actions.ts";
@@ -16,6 +17,7 @@ import { branchFor, excludeYxuDir, tryGit } from "../git.ts";
 import { Session } from "../ops.ts";
 import { runPipeline } from "../orchestrator/pipeline.ts";
 import { Conversation, type TurnRecord } from "../conversation.ts";
+import { attach, clipboardImage, findImagePaths, size as imageSize, type Attachment } from "../images.ts";
 import { fieldNamed, ORCHESTRATOR_FIELDS, orchestratorReport } from "../orchestrator-settings.ts";
 import { ago, samePath, describe as describeSession, findSession, listSessions, newSession, restoreTasks, saveSession, tildePath, titleFrom, type SessionFile } from "../sessions.ts";
 import { liveTask, liveTasks, onLiveChange, type LiveControl } from "../runner.ts";
@@ -60,6 +62,8 @@ export interface Engine {
     preamble?: string;
     /** The conversation as yxu recorded it (rebuilds memory if `resume` is gone). */
     history?: TurnRecord[];
+    /** Images that come with the goal. */
+    images?: Attachment[];
     /** The live config (context/compact settings can change during a session). */
     cfg: Config;
     /** Pipeline inputs (from /run or a command). */
@@ -110,11 +114,11 @@ export function gitBackend(root: string, cfg: () => Config): TaskBackend {
 
 export function productionEngine(root: string): Engine {
   return {
-    run: ({ goal, workflow, render, abort, session, resume, preamble, history, cfg, inputs, gate }) =>
+    run: ({ goal, workflow, render, abort, session, resume, preamble, history, images, cfg, inputs, gate }) =>
       withRunHooks(cfg, root, { goal, workflow: workflow.name, session, signal: abort.signal }, () =>
         workflow.mode === "pipeline"
-          ? runPipeline({ goal, cfg, workflow, root, render, abort, session, inputs, gate })
-          : runOrchestrator({ goal, cfg, workflow, root, render, abort, session, resume, preamble, history }),
+          ? runPipeline({ goal, cfg, workflow, root, render, abort, session, inputs, gate, images })
+          : runOrchestrator({ goal, cfg, workflow, root, render, abort, session, resume, preamble, history, images }),
       ),
     compact: ({ cfg, sessionId, instructions, abort, render, fork }) => compactConversation({ cfg, root, sessionId, instructions, abort, render, fork }),
   };
@@ -390,6 +394,8 @@ export class App {
 
     if (k.name === "char" && k.ctrl && !k.alt) {
       switch (k.text) {
+        case "v":
+          return this.attachImage("");
         case "c":
           if (working) return this.cancel();
           if (!e.isEmpty) {
@@ -587,7 +593,7 @@ export class App {
   submit() {
     const text = this.editor.text;
     const st = this.store.state;
-    if (!text.trim()) return;
+    if (!text.trim()) return this.attached.length ? this.flash("say what to do with the image, then enter", 2500) : undefined;
     // Slash commands work at any time (settings apply to the next run); goals wait for the current one.
     if (text.trim().startsWith("/")) {
       this.editor.commit(text);
@@ -606,7 +612,18 @@ export class App {
     if (st.status === "deciding") this.clearDecision(true);
     if (text.trim().startsWith("/")) return void this.runCommand(text.trim());
     if (text.trim() === "?") return this.store.set({ helpOpen: true });
-    this.running = this.startRun(text.trim());
+    // Image files named in the message (a dropped file types its path) go with it.
+    let goal = text.trim();
+    for (const found of findImagePaths(goal, this.o.folder ?? this.o.root)) {
+      try {
+        this.addAttachment(attach(found.path));
+        goal = goal.replace(found.raw, `[image: ${basename(found.path)}]`);
+      } catch (err) {
+        this.flash((err as Error).message, 4000);
+      }
+    }
+    const images = this.takeAttachments();
+    this.running = this.startRun(goal, { images });
   }
 
   /** Run a slash command line via the registry. */
@@ -1379,7 +1396,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     this.running = this.startRun(goal, run);
   }
 
-  private async startRun(goal: string, run?: { workflow?: Workflow & { name: string }; inputs?: Record<string, string> }) {
+  private async startRun(goal: string, run?: { workflow?: Workflow & { name: string }; inputs?: Record<string, string>; images?: Attachment[] }) {
     const s = this.store;
     s.set({ turn: s.state.turn + 1 });
     const issue = this.runIssue;
@@ -1390,7 +1407,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
       kind: "divider",
       label: `${this.sdkSessionId ? "continuing" : "turn"} ${s.state.turn} · ${time.toTimeString().slice(0, 5)}`,
     });
-    s.add({ kind: "user", text: goal, time });
+    s.add({ kind: "user", text: goal, time, ...(run?.images?.length ? { images: run.images.map((i) => `${i.name} · ${imageSize(i.bytes)}`) } : {}) });
     const wf = run?.workflow ?? this.workflow;
     const remember = this.cfg.context.memory && wf.mode === "auto";
     const next = remember ? this.conv.next() : { usesSummary: false as const };
@@ -1415,6 +1432,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
         history: this.conv.state.log,
         cfg: this.cfg,
         inputs: run?.inputs,
+        images: run?.images,
         gate: (message, stepId) => this.askGate(message, stepId),
       });
     } catch (e) {
@@ -2079,6 +2097,46 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     if (!query.trim()) return this.note(`**Repo map** — ${n} files at ${map.head.slice(0, 8)}, shared with every agent\n\n${overviewText(map)}\n\n\`/map <words>\` shows what a task about them would get.`);
     const slice = mapSlice(map, query, { chars: 4000, noOverview: true });
     this.note(slice.includes("Likely relevant") ? slice.replace(/^## .*\n/, `**Repo map** for "${query}"\n`) : `Nothing in the repo map matches "${query}".`);
+  }
+
+  // ── images ────────────────────────────────────────────────────────────────
+
+  private attached: Attachment[] = [];
+
+  private addAttachment(a: Attachment) {
+    if (this.attached.some((x) => x.path === a.path)) return;
+    this.attached.push(a);
+    this.store.set({ attachments: this.attached.map((x) => ({ path: x.path, name: x.name, bytes: x.bytes })) });
+  }
+
+  private takeAttachments(): Attachment[] {
+    const all = this.attached;
+    this.attached = [];
+    this.store.set({ attachments: undefined });
+    return all;
+  }
+
+  /** `/image [path|clear]` or ctrl+v: attach an image to the next message (no path: the clipboard's). */
+  attachImage(arg: string) {
+    const a = arg.trim();
+    if (a === "clear") {
+      const n = this.attached.length;
+      this.takeAttachments();
+      return this.flash(n ? `removed ${n} image${n === 1 ? "" : "s"}` : "no images attached", 2000);
+    }
+    let path = a.replace(/^['"]|['"]$/g, "").replace(/\\ /g, " ");
+    if (!path) {
+      const got = clipboardImage(this.o.root);
+      if ("error" in got) return this.flash(`${got.error} — or drag an image file here, or /image <path>`, 4000);
+      path = got.path;
+    } else if (path.startsWith("~")) path = join(homedir(), path.slice(1));
+    try {
+      const img = attach(isAbsolute(path) ? path : join(this.o.folder ?? this.o.root, path));
+      this.addAttachment(img);
+      this.flash(`attached ${img.name} (${imageSize(img.bytes)}) — it goes with your next message`, 3000);
+    } catch (err) {
+      this.flash((err as Error).message, 4000);
+    }
   }
 
   /** `/pr [task] [--draft] [--base B] [--title …]`, or [p] at a decision: push and open a pull request. */
