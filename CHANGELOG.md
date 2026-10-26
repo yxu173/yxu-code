@@ -3,6 +3,14 @@
 All notable changes are listed here. The project uses [semantic versioning](https://semver.org);
 before 1.0, minor versions may change the config format (with migration notes here).
 
+## Unreleased
+
+### Fixed
+- The mouse wheel scrolls the conversation (and the help and the command palette) instead of
+  paging through your message history. yxu now asks the terminal for wheel events; clicks are
+  ignored rather than typed. Select text with shift+drag; `ui.mouse: false` leaves the mouse to the
+  terminal (the wheel then no longer changes your message either).
+
 ## 0.1.1 (2026-10-26)
 
 ### Added

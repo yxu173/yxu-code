@@ -313,8 +313,12 @@ export const ConfigSchema = z.object({
         .default(["context", "agents", "tasks", "cost"])
         .describe('Which panel sections to show, in order; plugin sections are "<plugin>:<title>" (shown after these unless listed)'),
       footer: z.boolean().default(true).describe("Show the key hints line"),
+      mouse: z
+        .boolean()
+        .default(true)
+        .describe("The mouse wheel scrolls the conversation (select text with shift+drag). false: your terminal handles the mouse"),
     })
-    .default({ theme: "instrument", keys: {}, panel: true, panel_sections: ["context", "agents", "tasks", "cost"], footer: true })
+    .default({ theme: "instrument", keys: {}, panel: true, panel_sections: ["context", "agents", "tasks", "cost"], footer: true, mouse: true })
     .describe("The interactive interface: theme, keys, layout"),
 });
 

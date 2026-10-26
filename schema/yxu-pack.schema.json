@@ -513,7 +513,8 @@
               "tasks",
               "cost"
             ],
-            "footer": true
+            "footer": true,
+            "mouse": true
           },
           "description": "The interactive interface: theme, keys, layout",
           "type": "object",
@@ -569,6 +570,11 @@
             "footer": {
               "default": true,
               "description": "Show the key hints line",
+              "type": "boolean"
+            },
+            "mouse": {
+              "default": true,
+              "description": "The mouse wheel scrolls the conversation (select text with shift+drag). false: your terminal handles the mouse",
               "type": "boolean"
             }
           }
