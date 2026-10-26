@@ -3,6 +3,14 @@
 All notable changes are listed here. The project uses [semantic versioning](https://semver.org);
 before 1.0, minor versions may change the config format (with migration notes here).
 
+## Unreleased
+
+### Added
+- Sessions resume without Claude Code's history: yxu keeps its own copy of every orchestrator
+  conversation (`~/.local/share/yxu/transcripts`, through the Agent SDK's session store) and
+  resumes from it. When no copy exists anywhere, the conversation is rebuilt from yxu's record of
+  the session's turns, with a notice. `yxu sessions rm` removes a session's transcripts.
+
 ## 0.1.1 (2026-10-26)
 
 ### Added

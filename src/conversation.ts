@@ -112,6 +112,17 @@ export class Conversation {
   }
 }
 
+/**
+ * The whole conversation as yxu recorded it, for when Claude's own copy can't be found: the
+ * orchestrator starts a new conversation told what was said (the last turns, capped).
+ */
+export function recapPreamble(log: TurnRecord[]): string {
+  if (!log.length) return "";
+  let body = log.map((t) => `The user asked: ${clip(t.goal, ANSWER_CHARS)}\nYou answered: ${clip(t.finalText || "(no answer)", ANSWER_CHARS)}`).join("\n\n");
+  if (body.length > SINCE_CHARS) body = `… (earlier turns omitted)\n${body.slice(-SINCE_CHARS)}`;
+  return `[yxu] This continues an earlier conversation whose full history is no longer available. Here is what was said, as yxu recorded it (task ids in it are still valid):\n\n${body}\n\n[yxu] Now the user says:\n`;
+}
+
 /** What the orchestrator is told when it resumes a summary the conversation has moved past. */
 export function sincePreamble(tail: string | undefined, since: TurnRecord[]): string {
   const parts: string[] = [];

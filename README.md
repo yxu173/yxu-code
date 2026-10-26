@@ -316,6 +316,13 @@ its conversations per directory) and opens the interface. Sessions are titled by
 message; in the interface, `/sessions [all|here]` lists them, `/resume <id>` switches to another
 of this repo's, `/rename` names this one, and `/new` starts a new one.
 
+Resuming doesn't depend on Claude Code's own history. yxu keeps its own copy of every
+orchestrator conversation in `~/.local/share/yxu/transcripts` (Claude Code writes each entry there
+as well), and resumes from it. If you clear `~/.claude`, sessions still resume with their full
+memory. If neither copy exists (say, a session from before this), the orchestrator starts a new
+conversation with a recap of the session's turns as yxu recorded them, and tells you so.
+`yxu sessions rm` deletes a session's transcripts too.
+
 ### Watching an agent and stepping in
 
 `/watch` opens a wider side panel on a running agent. It shows the agent's tool calls as they
