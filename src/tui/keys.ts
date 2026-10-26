@@ -15,6 +15,10 @@ export type KeyName =
   | "end"
   | "pageup"
   | "pagedown"
+  | "wheelup"
+  | "wheeldown"
+  /** Any other mouse report (clicks, drags): swallowed, never typed. */
+  | "mouse"
   | "paste";
 
 export interface Key {
@@ -120,6 +124,17 @@ export class KeyParser {
   private escape(s: string): { key: Key; len: number } | undefined {
     if (s.length === 1) return undefined; // maybe a sequence, maybe a lone ESC
     const next = s[1]!;
+
+    if (next === "[" && s[2] === "<") {
+      // SGR mouse report: ESC [ < button ; x ; y (M press | m release)
+      const m = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])/.exec(s);
+      if (!m) return /^\x1b\[<[\d;]*$/.test(s) ? undefined : { key: { name: "escape" }, len: 1 };
+      const b = Number(m[1]);
+      // 64/65: wheel up/down (+4 shift, +8 alt, +16 ctrl); 66/67: horizontal wheel.
+      const wheel = (b & 64) !== 0 && (b & 2) === 0;
+      const name: KeyName = wheel && m[4] === "M" ? ((b & 1) === 0 ? "wheelup" : "wheeldown") : "mouse";
+      return { key: { name, ...(b & 4 ? { shift: true } : {}) }, len: m[0].length };
+    }
 
     if (next === "[") {
       // CSI: ESC [ params final

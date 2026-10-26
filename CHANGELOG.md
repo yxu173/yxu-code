@@ -5,6 +5,12 @@ before 1.0, minor versions may change the config format (with migration notes he
 
 ## Unreleased
 
+### Fixed
+- The mouse wheel scrolls the conversation (and the help and the command palette) instead of
+  paging through your message history. yxu now asks the terminal for wheel events; clicks are
+  ignored rather than typed. Select text with shift+drag; `ui.mouse: false` leaves the mouse to the
+  terminal (the wheel then no longer changes your message either).
+
 ### Changed
 - A calmer, easier interface. The header says where you are (repo · branch) and what is happening
   in words ("Working 1:35 · 2 agents at work", "Your decision"). The welcome screen offers things to

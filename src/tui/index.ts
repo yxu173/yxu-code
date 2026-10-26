@@ -49,7 +49,7 @@ export function runTui(opts: TuiOptions): Promise<{ pending: { taskId: string; a
         resolve(summary);
       },
     });
-    term.start({ data: (c) => app.input(c), resize: () => app.render() });
+    term.start({ data: (c) => app.input(c), resize: () => app.render() }, { mouse: opts.cfg.ui.mouse });
     if (!opts.demo) app.prefetchModels();
     process.on("SIGTERM", () => app.quit());
     app.render();

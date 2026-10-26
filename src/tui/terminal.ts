@@ -22,9 +22,13 @@ export class Terminal {
     return { width: this.out.columns || 80, height: this.out.rows || 24 };
   }
 
-  start(handlers: { data: (chunk: string) => void; resize: () => void }) {
+  /** Mouse wheel reporting (SGR); without it the wheel arrives as ↑/↓ and would page through history. */
+  private mouse = true;
+
+  start(handlers: { data: (chunk: string) => void; resize: () => void }, opts: { mouse?: boolean } = {}) {
     if (this.active) return;
     this.active = true;
+    this.mouse = opts.mouse ?? true;
     this.onData = handlers.data;
     this.onResize = () => {
       this.prev = []; // full repaint after a resize
@@ -32,6 +36,9 @@ export class Terminal {
     };
     // Alternate screen, hide cursor, bracketed paste, no line wrap at the right edge.
     this.write(`${ESC}?1049h${ESC}?25l${ESC}?2004h${ESC}?7l${ESC}2J${ESC}H`);
+    // Wheel events as mouse reports (1000 + SGR 1006). With the mouse off, at least stop the
+    // terminal from turning the wheel into arrow keys in the alternate screen (1007).
+    this.write(this.mouse ? `${ESC}?1000h${ESC}?1006h` : `${ESC}?1007l`);
     if (this.inp.isTTY) this.inp.setRawMode(true);
     this.inp.setEncoding("utf8");
     this.inp.on("data", this.onData);
@@ -49,6 +56,7 @@ export class Terminal {
     if (this.onResize) this.out.off("resize", this.onResize);
     if (this.inp.isTTY) this.inp.setRawMode(false);
     this.inp.pause();
+    this.write(this.mouse ? `${ESC}?1006l${ESC}?1000l` : `${ESC}?1007h`);
     this.write(`${ESC}0m${ESC}?7h${ESC}?2004l${ESC}?25h${ESC}?1049l`);
     process.off("exit", this.restoreBound);
     process.off("uncaughtException", this.crash);

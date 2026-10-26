@@ -318,8 +318,10 @@ export class App {
     switch (k.name) {
       case "up":
       case "down":
+      case "wheelup":
+      case "wheeldown":
         if (!n || k.ctrl || k.shift) return false;
-        p.selected = (p.selected + (k.name === "up" ? -1 : 1) + n) % n;
+        p.selected = (p.selected + (k.name === "up" || k.name === "wheelup" ? -1 : 1) + n) % n;
         this.store.changed();
         return true;
       case "tab":
@@ -368,6 +370,14 @@ export class App {
     const st = this.store.state;
     const e = this.editor;
     const working = st.status === "working" || st.status === "cancelling";
+
+    // The mouse wheel scrolls what you are reading; it never touches your message or its history.
+    if (k.name === "wheelup" || k.name === "wheeldown") {
+      const rows = k.shift ? this.page() : 3;
+      if (st.helpOpen) return this.store.set({ helpScroll: Math.max(0, (st.helpScroll ?? 0) + (k.name === "wheelup" ? -rows : rows)) });
+      return this.scrollBy(k.name === "wheelup" ? rows : -rows);
+    }
+    if (k.name === "mouse") return;
 
     if (st.helpOpen) {
       const step = { up: -1, down: 1, pageup: -10, pagedown: 10 }[k.name as string];
