@@ -262,7 +262,7 @@ describe("packs with plugins, in the interface", () => {
     const { app, screen } = appFor();
     await app.refreshPanels();
     let s = screen();
-    expect(s).toContain("T O D O S");
+    expect(s).toContain("Todos");
     expect(s).toContain("2 open");
     expect(s).toContain("src.py:2  TODO: handle errors");
 

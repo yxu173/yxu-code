@@ -11,7 +11,7 @@ import { Store, type ContextInfo } from "../src/tui/model.ts";
 import { recoveryHint } from "../src/tui/recovery.ts";
 import { lineWidth, plain, span, truncate, wrap } from "../src/tui/text.ts";
 import { ASCII_GLYPHS, createTheme, detectColorDepth, UNICODE_GLYPHS, type Theme } from "../src/tui/theme.ts";
-import { renderFrame, type Frame } from "../src/tui/view.ts";
+import { renderFrame, STATUS_WORD, type Frame } from "../src/tui/view.ts";
 import { emptyUsage, type TaskResult } from "../src/types.ts";
 
 const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
@@ -183,21 +183,21 @@ describe("renderFrame", () => {
   });
 
   test("context panel shows only on wide terminals and can be closed", () => {
-    expect(strip(frame(color, 140, 44).rows.join("\n"))).toContain("C O N T E X T");
-    expect(strip(frame(color, 90, 30).rows.join("\n"))).not.toContain("C O N T E X T");
-    expect(strip(frame(color, 140, 44, (s) => s.set({ panelOpen: false })).rows.join("\n"))).not.toContain("C O N T E X T");
+    expect(strip(frame(color, 140, 44).rows.join("\n"))).toContain("Context");
+    expect(strip(frame(color, 90, 30).rows.join("\n"))).not.toContain("Context");
+    expect(strip(frame(color, 140, 44, (s) => s.set({ panelOpen: false })).rows.join("\n"))).not.toContain("Context");
   });
 
   test("state is spelled out in words, not color alone", () => {
     const text = strip(frame(color, 140, 44).rows.join("\n"));
-    expect(text).toContain("decision required");
+    expect(text).toContain("Your decision");
     expect(text).toContain("DECISION REQUIRED");
     expect(text).toContain("[a] apply to your branch");
     expect(text).toContain("fault");
     expect(text).toContain("rate-limited"); // recovery hint
     for (const status of ["ready", "working", "complete", "fault", "cancelling"] as const) {
       const t = strip(frame(color, 120, 30, (s) => s.set({ status, decision: undefined })).rows[0]!);
-      expect(t).toContain(status === "working" ? "working" : status);
+      expect(t).toContain(STATUS_WORD[status]);
     }
   });
 
@@ -219,10 +219,25 @@ describe("renderFrame", () => {
     expect(m(0)).not.toBe(m(2));
   });
 
+  test("the welcome screen offers things to try, recent sessions and waiting results", () => {
+    const text = strip(
+      frame(color, 140, 44, (s) => {
+        s.set({ entries: [], decision: undefined, status: "ready", recent: [{ id: "mvp1abc-x1y2z3", title: "Fix the login redirect loop", turns: 3, ago: "2h ago" }] });
+        s.set({ tasks: [{ taskId: "t-1", agent: "coder", state: "ok", title: "x", files: 2, pending: true }] });
+      }).rows.join("\n"),
+    );
+    expect(text).toContain("What should we work on?");
+    expect(text).toContain("/issue 123");
+    expect(text).toContain("Pick up where you left off");
+    expect(text).toContain("/resume mvp1abc-x1y2z3  Fix the login redirect loop · 2h ago");
+    expect(text).toContain("1 result is waiting for you: /tasks");
+    expect(text).toMatch(/╭─+╮/); // the message box
+  });
+
   test("help overlay lists keys and the sign legend", () => {
     const text = strip(frame(color, 120, 50, (s) => s.set({ helpOpen: true })).rows.join("\n"));
     expect(text).toContain("ctrl+o");
-    expect(text).toContain("decision required");
+    expect(text).toContain("Keys");
     expect(text).toContain("/run <workflow>"); // the list scrolls; later commands are below the fold
   });
 
@@ -351,7 +366,7 @@ describe("App interaction", () => {
     expect(s).toContain("Working on it.");
     expect(s).toContain("read"); // two Reads grouped into one activity
     expect(s).toContain("2 lookups");
-    expect(s).toContain("1/3"); // one subagent slot lit
+    expect(s).toContain("1 of 3 at work"); // one subagent at work
     expect(app.store.state.entries.filter((e) => e.kind === "assistant")).toHaveLength(1); // stream finalized, not duplicated
 
     release();
@@ -464,7 +479,7 @@ describe("App interaction", () => {
     app.input("/tasks\r");
     expect(screen()).toContain("No tasks in this session yet.");
     app.input("?");
-    expect(screen()).toContain("K E Y S");
+    expect(screen()).toContain("Keys");
     app.input("\x1b");
     await Bun.sleep(60);
     expect(app.store.state.helpOpen).toBe(false);
@@ -569,7 +584,7 @@ describe("context & compaction controls", () => {
     expect(s).toContain("memory: on — continuing (turn 1)");
     expect(s).toContain("window: 40k of 200k tokens (20%), auto-compacts at 167k");
     expect(s).toContain("largest: messages 30k");
-    expect(s).toMatch(/window\s+▰▰▱▱▱▱▱▱ 20% 40k\/200k/); // panel gauge with a written percentage
+    expect(s).toMatch(/context\s+▰▱▱▱▱▱ 20% of 200k/); // panel gauge with a written percentage
 
     app.input("second\r");
     await app.idle();
@@ -658,7 +673,7 @@ describe("context & compaction controls", () => {
     expect(forks[1]!.sessionId).toBe("sess-1+c");
     forks[1]!.finish();
     await app.backgroundCompaction();
-    expect(screen()).toMatch(/window\s+▰▱▱▱▱▱▱▱ 10%/);
+    expect(screen()).toMatch(/context\s+▰▱▱▱▱▱ 10%/);
     app.input("fourth\r");
     await app.idle();
     expect(runs[3]).toEqual({ resume: "sess-1+c+c", preamble: undefined });
