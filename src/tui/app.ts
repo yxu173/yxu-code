@@ -16,7 +16,7 @@ import { branchFor, excludeYxuDir, tryGit } from "../git.ts";
 import { Session } from "../ops.ts";
 import { runPipeline } from "../orchestrator/pipeline.ts";
 import { Conversation } from "../conversation.ts";
-import { ago, describe as describeSession, findSession, listSessions, newSession, restoreTasks, saveSession, tildePath, titleFrom, type SessionFile } from "../sessions.ts";
+import { ago, samePath, describe as describeSession, findSession, listSessions, newSession, restoreTasks, saveSession, tildePath, titleFrom, type SessionFile } from "../sessions.ts";
 import { liveTask, liveTasks, onLiveChange, type LiveControl } from "../runner.ts";
 import { buildRepoMap, loadRepoMap, mapSlice, overviewText, type RepoMap } from "../repomap.ts";
 import { fixCi, type FixCiOptions, type FixCiResult } from "../fix-ci.ts";
@@ -1982,7 +1982,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     } catch (e) {
       return this.fail((e as Error).message, "/sessions lists them");
     }
-    if (s.root !== this.o.root) return this.fail(`session ${s.id} belongs to ${tildePath(s.root)}`, `run \`yxu resume ${s.id}\` (it switches there)`);
+    if (!samePath(s.root, this.o.root)) return this.fail(`session ${s.id} belongs to ${tildePath(s.root)}`, `run \`yxu resume ${s.id}\` (it switches there)`);
     if (s.id === this.saved.id) return this.note("That is this session.", "info");
     this.stopBackgroundCompaction();
     this.persist();

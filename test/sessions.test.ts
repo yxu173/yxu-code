@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseConfig } from "../src/config.ts";
@@ -8,7 +8,7 @@ import { branchFor, git, YXU_IDENTITY } from "../src/git.ts";
 import { Session } from "../src/ops.ts";
 import type { RunOutcome } from "../src/orchestrator/run.ts";
 import { writeTaskRecord } from "../src/runner.ts";
-import { deleteSession, findSession, listSessions, newSession, renameSession, restoreTasks, saveSession, sessionsDir, type SessionFile } from "../src/sessions.ts";
+import { canonPath, deleteSession, findSession, listSessions, newSession, renameSession, restoreTasks, saveSession, sessionsDir, type SessionFile } from "../src/sessions.ts";
 import { App, type Engine } from "../src/tui/app.ts";
 import { createTheme } from "../src/tui/theme.ts";
 import type { Frame } from "../src/tui/view.ts";
@@ -73,6 +73,17 @@ describe("the session store", () => {
     expect(listSessions({ root: repoA })).toHaveLength(1);
   });
 
+  test("the same folder matches however its path is spelled (symlinks, as on macOS)", () => {
+    if (process.platform === "win32") return;
+    const link = `${repoA}-link`;
+    symlinkSync(repoA, link);
+    made(link, link, "via link");
+    expect(listSessions({ root: repoA }).map((s) => s.title)).toEqual(["via link"]);
+    expect(listSessions({ root: `${link}/` }).map((s) => s.title)).toEqual(["via link"]);
+    expect(canonPath("C:\\x\\y")).toBe("C:/x/y");
+    rmSync(link);
+  });
+
   test("tasks come back pending only while their branch exists", () => {
     const s = made(repoA, repoA, "t");
     for (const id of ["t-live", "t-gone"]) {
@@ -125,7 +136,7 @@ describe("sessions in the interface", () => {
     first.app.input("Now validate the email\r");
     await first.app.idle();
     let [saved] = listSessions({ root: repoA });
-    expect(saved).toMatchObject({ title: "Add a login form", root: repoA, folder: repoA, costUsd: 0.02, workflow: "default" });
+    expect(saved).toMatchObject({ title: "Add a login form", root: canonPath(repoA), folder: canonPath(repoA), costUsd: 0.02, workflow: "default" });
     expect(saved!.conversation).toMatchObject({ turn: 2, sessionId: "claude-1" });
     first.app.input("/rename Login work\r");
     expect(findSession(saved!.id).title).toBe("Login work");
@@ -183,7 +194,7 @@ describe("yxu sessions", () => {
     out = cli(repoA, "sessions", "--all");
     expect(out).toContain("fix login");
     expect(out).toContain("other repo");
-    expect(out.indexOf(repoB.replace(process.env.HOME ?? "", "~"))).toBeGreaterThanOrEqual(0);
+    expect(out).toContain(canonPath(repoB).split("/").at(-1)!);
     expect(JSON.parse(cli(repoA, "sessions", "--json"))[0]).toMatchObject({ id: a.id, title: "fix login", turns: 2 });
     // Outside any repository: every repository's.
     expect(cli(tmpdir(), "sessions")).toContain("other repo");

@@ -12,7 +12,7 @@ import { Session, TaskOps } from "./ops.ts";
 import { runPipeline } from "./orchestrator/pipeline.ts";
 import { compactConversation, orchestratorPrompt, runOrchestrator, sessionPath, type OrchestratorRender, type RunOutcome } from "./orchestrator/run.ts";
 import { Conversation } from "./conversation.ts";
-import { deleteSession, describe as describeSession, findSession, listSessions, newSession, renameSession, saveSession, tildePath, titleFrom, type SessionFile } from "./sessions.ts";
+import { deleteSession, samePath, describe as describeSession, findSession, listSessions, newSession, renameSession, saveSession, tildePath, titleFrom, type SessionFile } from "./sessions.ts";
 import { issueGoal, resolveIssue, type Issue } from "./github.ts";
 import { defaultBase, draftPr, openPr, recentTasks, tagIssue, tagRun } from "./pr.ts";
 import { fixCi } from "./fix-ci.ts";
@@ -215,7 +215,7 @@ async function tui(argv: string[]) {
   } catch (e) {
     die((e as Error).message);
   }
-  if (resume && resume.root !== root) die(`session ${resume.id} belongs to ${tildePath(resume.root)}: \`yxu resume ${resume.id}\` switches there`);
+  if (resume && !samePath(resume.root, root)) die(`session ${resume.id} belongs to ${tildePath(resume.root)}: \`yxu resume ${resume.id}\` switches there`);
   const cfg = loadConfig(root, { sets: values.set });
   getWorkflow(cfg, values.workflow); // validate before taking over the screen
   const { runTui } = await import("./tui/index.ts");
@@ -337,7 +337,7 @@ async function run(argv: string[]) {
       } catch (e) {
         die((e as Error).message);
       }
-      if (saved.root !== root) die(`session ${saved.id} belongs to ${tildePath(saved.root)}; run it there, or \`yxu resume ${saved.id}\``);
+      if (!samePath(saved.root, root)) die(`session ${saved.id} belongs to ${tildePath(saved.root)}; run it there, or \`yxu resume ${saved.id}\``);
     } else if (values.continue) saved = listSessions({ root })[0];
     if (values.continue && !saved) console.log(dim("(no earlier session in this repo: starting a new one)\n"));
     if (saved) console.log(dim(`(session ${saved.id}: ${saved.title})\n`));

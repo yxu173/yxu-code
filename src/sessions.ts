@@ -5,7 +5,7 @@
  * the conversation (Conversation state: Claude's session, turns, background summaries) and the
  * tasks it made, so resuming brings back the conversation and its pending results.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readTaskRecord } from "./combine.ts";
@@ -41,6 +41,24 @@ export function sessionsDir(env: NodeJS.ProcessEnv = process.env): string {
 
 const fileOf = (id: string) => join(sessionsDir(), `${id}.json`);
 
+/**
+ * One spelling per directory, so sessions match wherever the path came from: symlinks resolved
+ * (macOS /var → /private/var), Windows short names expanded, forward slashes, drive letter upper case.
+ */
+export function canonPath(p: string): string {
+  let r = p;
+  try {
+    r = realpathSync.native(p);
+  } catch {
+    // gone: compare as written
+  }
+  r = r.replace(/\\/g, "/");
+  if (/^[a-z]:\//.test(r)) r = r[0]!.toUpperCase() + r.slice(1);
+  return r.length > 1 ? r.replace(/\/+$/, "") : r;
+}
+
+export const samePath = (a: string, b: string) => canonPath(a) === canonPath(b);
+
 /** A title from the first message: one line, short. */
 export function titleFrom(goal: string): string {
   const line = goal.trim().split("\n")[0]!.replace(/\s+/g, " ");
@@ -49,7 +67,7 @@ export function titleFrom(goal: string): string {
 
 export function newSession(root: string, folder: string, conversation: ConversationState): SessionFile {
   const now = new Date().toISOString();
-  return { version: 1, id: conversation.id, title: "", root, folder, createdAt: now, updatedAt: now, costUsd: 0, tasks: [], conversation };
+  return { version: 1, id: conversation.id, title: "", root: canonPath(root), folder: canonPath(folder), createdAt: now, updatedAt: now, costUsd: 0, tasks: [], conversation };
 }
 
 /** Written whole and renamed into place. Sessions where nothing happened yet aren't kept. */
@@ -82,11 +100,13 @@ export interface ListFilter {
 export function listSessions(f: ListFilter = {}): SessionFile[] {
   const dir = sessionsDir();
   if (!existsSync(dir)) return [];
+  const root = f.root ? canonPath(f.root) : undefined;
+  const folder = f.folder ? canonPath(f.folder) : undefined;
   return readdirSync(dir)
     .filter((n) => n.endsWith(".json"))
     .map((n) => read(join(dir, n)))
     .filter((s): s is SessionFile => Boolean(s))
-    .filter((s) => (!f.root || s.root === f.root) && (!f.folder || s.folder === f.folder))
+    .filter((s) => (!root || canonPath(s.root) === root) && (!folder || canonPath(s.folder) === folder))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
