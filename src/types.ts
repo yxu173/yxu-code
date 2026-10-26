@@ -86,6 +86,11 @@ export interface Adapter {
   name: AgentKind;
   /** argv (command first) to run the task headless. */
   command(task: TaskSpec, profile: AgentProfile): string[];
+  /**
+   * Continue the CLI's own session with a new message (steering a running task). Without it,
+   * a steered task starts again in its worktree, told what it was doing.
+   */
+  resume?(task: TaskSpec, profile: AgentProfile, sessionId: string): string[];
   /** Fold the full stdout into events + a final result. */
   parse(stdout: string, stderr: string, exitCode: number | null): {
     events: AgentEvent[];

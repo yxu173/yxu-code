@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { agentRefs, parseDuration } from "../config.ts";
 import { tryGit } from "../git.ts";
 import { which } from "../platform.ts";
+import { liveTasks } from "../runner.ts";
 import type { CliName } from "../types.ts";
 import { commandUsage, type UserCommand } from "../user-commands.ts";
 import { catalogKey, keyLabel } from "../models.ts";
@@ -128,6 +129,11 @@ function removeAgent(app: App, name: string | undefined) {
   // null removes it from lower layers too (the built-in team, packs, your user config).
   app.setConfig(["agents", name], undefined, null);
   app.changed(`Removed ${name}`);
+}
+
+/** Agents running right now, for /watch, /tell, /pause … */
+function liveSuggestions(): Suggestion[] {
+  return liveTasks().map((t) => ({ value: t.taskId.slice(t.taskId.lastIndexOf("-") + 1), description: `${t.agent} · ${t.state}` }));
 }
 
 function agentSuggestions(app: App): Suggestion[] {
@@ -518,6 +524,34 @@ export const COMMANDS: Command[] = [
     complete: (app, i) => (i === 0 ? taskSuggestions(app, true) : []),
     run: (app, [id]) => app.taskAction("apply", id),
   },
+  {
+    name: "watch",
+    usage: "[task|off]",
+    description: "Watch a running agent live in the side panel: its tool calls and diff",
+    group: "tasks",
+    complete: (_app, i) => (i === 0 ? [...liveSuggestions(), { value: "off", description: "stop watching" }] : []),
+    run: (app, [arg]) => app.watchCommand(arg ?? ""),
+  },
+  {
+    name: "tell",
+    usage: "[task] <message>",
+    description: "Send a running agent a correction; it continues with it, keeping its work",
+    group: "tasks",
+    needsArgs: true,
+    complete: (_app, i) => (i === 0 ? liveSuggestions() : []),
+    run: (app, args) => app.tell(args),
+  },
+  { name: "pause", usage: "[task]", description: "Pause a running agent (its timeout too)", group: "tasks", complete: (_app, i) => (i === 0 ? liveSuggestions() : []), run: (app, [id]) => app.liveAction("pause", id) },
+  { name: "resume", usage: "[task]", description: "Continue a paused agent", group: "tasks", complete: (_app, i) => (i === 0 ? liveSuggestions() : []), run: (app, [id]) => app.liveAction("resume", id) },
+  {
+    name: "takeover",
+    usage: "[task]",
+    description: "Stop the agent and finish its task yourself in its worktree (/done hands it back)",
+    group: "tasks",
+    complete: (_app, i) => (i === 0 ? liveSuggestions() : []),
+    run: (app, [id]) => app.liveAction("takeover", id),
+  },
+  { name: "done", usage: "[task]", description: "Hand a task you took over back to the orchestrator", group: "tasks", complete: (_app, i) => (i === 0 ? liveSuggestions() : []), run: (app, [id]) => app.liveAction("done", id) },
   {
     name: "map",
     usage: "[words]",

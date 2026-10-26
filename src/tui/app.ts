@@ -1,5 +1,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { which } from "../platform.ts";
 import { applyTask, applyWithHooks, diffStat, discardTask, type ActionResult } from "../actions.ts";
 import { hasHooks, withRunHooks } from "../hooks.ts";
 import { describe, type Answer, type PermissionRequest } from "../permissions.ts";
@@ -14,6 +16,7 @@ import { branchFor, excludeYxuDir, tryGit } from "../git.ts";
 import { Session } from "../ops.ts";
 import { runPipeline } from "../orchestrator/pipeline.ts";
 import { Conversation } from "../conversation.ts";
+import { liveTask, liveTasks, onLiveChange, type LiveControl } from "../runner.ts";
 import { buildRepoMap, loadRepoMap, mapSlice, overviewText, type RepoMap } from "../repomap.ts";
 import { fixCi, type FixCiOptions, type FixCiResult } from "../fix-ci.ts";
 import { issueGoal, resolveIssue } from "../github.ts";
@@ -267,6 +270,7 @@ export class App {
     clearTimeout(this.escTimer);
     this.abort?.abort();
     this.stopBackgroundCompaction();
+    this.stopWatching();
   }
 
   // ── keys ───────────────────────────────────────────────────────────────────
@@ -1789,6 +1793,119 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     if (!this.offerDecision() && this.store.state.status !== "fault") this.settle();
   }
 
+  // ── watching and stepping in ──────────────────────────────────────────────
+
+  private watchTimer?: ReturnType<typeof setInterval>;
+  private unwatch?: () => void;
+  private watchFollow = false;
+
+  /** `/watch [task|off]`: show a running agent live in the side panel; no task: follow whichever runs. */
+  watchCommand(arg = "") {
+    if (arg === "off") {
+      this.stopWatching();
+      return this.note("Stopped watching.", "info");
+    }
+    const target = arg ? this.liveTarget(arg) : liveTasks().at(-1);
+    if (typeof target === "string") return this.fail(target);
+    this.watchFollow = !arg;
+    this.unwatch ??= onLiveChange((id) => {
+      if (this.store.state.watch?.taskId === id || (this.watchFollow && liveTask(id))) this.refreshWatch(id);
+    });
+    if (!this.watchTimer) {
+      this.watchTimer = setInterval(() => this.refreshWatch(), 1500);
+      this.watchTimer.unref?.();
+    }
+    if (!target) {
+      this.store.set({ watch: undefined });
+      return this.note("No agent is running. Watching is on: the next one to start shows in the side panel. `/watch off` stops.", "info");
+    }
+    this.refreshWatch(target.taskId);
+  }
+
+  private stopWatching() {
+    clearInterval(this.watchTimer);
+    this.watchTimer = undefined;
+    this.unwatch?.();
+    this.unwatch = undefined;
+    this.watchFollow = false;
+    this.store.set({ watch: undefined });
+  }
+
+  /** Rebuild the watch view: the agent's live state, its activity, and its changes so far. */
+  private refreshWatch(id?: string) {
+    const prev = this.store.state.watch;
+    let taskId = id ?? prev?.taskId;
+    // Following: move on to a running agent when the watched one has finished.
+    if (this.watchFollow && (!taskId || !liveTask(taskId))) taskId = liveTasks().at(-1)?.taskId ?? taskId;
+    if (!taskId) return;
+    const ctl = liveTask(taskId);
+    if (!ctl) {
+      if (prev?.taskId === taskId && prev.state !== "finished") this.store.set({ watch: { ...prev, state: "finished" } });
+      return;
+    }
+    // Paths inside the agent's worktree, shown relative to the repository.
+    const rel = (t: string) => t.split(`${ctl.worktree}/`).join("");
+    const activity = ctl.events.flatMap((e) =>
+      e.kind === "tool"
+        ? [`${e.status === "failed" ? "✗" : e.status === "completed" ? "✓" : "·"} ${e.name}${e.target ? ` ${rel(e.target)}` : ""}`]
+        : e.kind === "text" && e.text.trim()
+          ? [`“${e.text.trim().split("\n")[0]}”`]
+          : e.kind === "error"
+            ? [`! ${e.message}`]
+            : [],
+    );
+    const changes = worktreeChanges(ctl.worktree);
+    this.store.set({
+      watch: { taskId, agent: ctl.agent, model: ctl.model, state: ctl.state, startedAt: ctl.startedAt, activity, log: [...ctl.log], files: changes.files, diffTail: changes.tail, follow: this.watchFollow },
+    });
+  }
+
+  /** The running task a command means: named (any part of its id), watched, or the only one. */
+  private liveTarget(arg?: string): LiveControl | string {
+    const all = liveTasks();
+    if (!all.length) return "no agent is running right now";
+    if (arg) return all.find((t) => t.taskId === arg || t.taskId.endsWith(arg)) ?? `no running task matching "${arg}" (running: ${all.map((t) => shortTask(t.taskId)).join(", ")})`;
+    const watched = this.store.state.watch && liveTask(this.store.state.watch.taskId);
+    if (watched) return watched;
+    if (all.length === 1) return all[0]!;
+    return `${all.length} agents are running (${all.map((t) => `${shortTask(t.taskId)} ${t.agent}`).join(", ")}); name one, or /watch it first`;
+  }
+
+  /** `/tell [task] <message>`: the agent stops and continues with the message. */
+  tell(args: string[]) {
+    const first = args[0] ?? "";
+    const named = liveTasks().some((t) => t.taskId === first || (first.length >= 4 && t.taskId.endsWith(first)));
+    const target = this.liveTarget(named ? first : undefined);
+    const message = (named ? args.slice(1) : args).join(" ").trim();
+    if (!message) return this.fail("usage: /tell [task] <message for the agent>");
+    if (typeof target === "string") return this.fail(target);
+    const err = target.steer(message);
+    if (err) return this.fail(`can't message ${target.agent}: ${err}`);
+    this.note(`Told ${target.agent} (${shortTask(target.taskId)}): ${message}${/[.!?]$/.test(message) ? "" : "."} It continues with it; its work so far is kept.`, "info");
+    if (!this.store.state.watch) this.watchCommand(target.taskId);
+  }
+
+  /** `/pause`, `/resume`, `/takeover`, `/done` for a running task. */
+  liveAction(kind: "pause" | "resume" | "takeover" | "done", arg?: string) {
+    const target = this.liveTarget(arg);
+    if (typeof target === "string") return this.fail(target);
+    const err = kind === "pause" ? target.pause() : kind === "resume" ? target.resume() : kind === "takeover" ? target.takeOver() : target.done();
+    if (err) return this.fail(`can't ${kind === "takeover" ? "take over" : kind} ${target.agent}: ${err}`);
+    const id = shortTask(target.taskId);
+    if (kind === "pause") this.note(`Paused ${target.agent} (${id}); its timeout is paused too. /resume continues.`, "info");
+    if (kind === "resume") this.note(`${target.agent} (${id}) continues.`, "info");
+    if (kind === "done") this.note(`Handed ${id} back: your edits and the agent's are collected as the task's result.`, "ok");
+    if (kind === "takeover") {
+      const opened = openEditor(target.worktree);
+      this.note(
+        `${target.agent} stopped; ${id} is yours. Edit in \`${target.worktree}\`${opened ? ` (opened in ${opened})` : " (open it in your editor)"}, then \`/done\` hands it back: the orchestrator continues with your changes and the agent's.`,
+        "attention",
+      );
+    }
+    if (!this.store.state.watch) this.watchCommand(target.taskId);
+    else this.refreshWatch(target.taskId);
+  }
+
   private mapping?: Promise<RepoMap | undefined>;
 
   /** Bring the repo map up to date in the background (only changed files are read). */
@@ -1997,4 +2114,45 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
 function firstLine(s: string, max = 70): string {
   const l = (s ?? "").trim().split("\n")[0] ?? "";
   return l.length > max ? `${l.slice(0, max - 1)}…` : l;
+}
+
+const shortTask = (id: string) => id.slice(id.lastIndexOf("-") + 1);
+
+/** What an agent has changed so far, without touching its git index. */
+export function worktreeChanges(wt: string): { files: { path: string; added: number; removed: number }[]; tail: string[] } {
+  const files: { path: string; added: number; removed: number }[] = [];
+  for (const line of tryGit(wt, "diff", "--numstat", "HEAD").out.split("\n")) {
+    const [a, d, path] = line.split("\t");
+    if (path) files.push({ path, added: Number(a) || 0, removed: Number(d) || 0 });
+  }
+  const untracked = tryGit(wt, "ls-files", "--others", "--exclude-standard").out.split("\n").filter(Boolean);
+  let newText: string[] = [];
+  for (const path of untracked.slice(0, 20)) {
+    let text = "";
+    try {
+      text = readFileSync(join(wt, path), "utf8");
+    } catch {
+      continue;
+    }
+    const lines = text.split("\n").filter((l, i, all) => l || i < all.length - 1);
+    files.push({ path, added: lines.length, removed: 0 });
+    newText = lines.map((l) => `+${l}`);
+  }
+  const diff = tryGit(wt, "diff", "HEAD").out.split("\n").filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---) /.test(l));
+  return { files, tail: (diff.length ? diff : newText).slice(-12) };
+}
+
+/** Open a folder in a graphical editor, if one is around. Returns its name. */
+function openEditor(dir: string): string | undefined {
+  const gui = ["code", "cursor", "zed", "subl", "idea", "webstorm", "fleet"];
+  const fromEnv = process.env.YXU_EDITOR ?? process.env.VISUAL;
+  const bin = fromEnv && gui.includes(fromEnv.split(/[\\/]/).at(-1)!.split(" ")[0]!) ? fromEnv.split(" ")[0]! : gui.find((g) => which(g));
+  if (!bin || !which(bin)) return undefined;
+  try {
+    const child = spawn(bin, [dir], { detached: true, stdio: "ignore" });
+    child.unref();
+    return bin.split(/[\\/]/).at(-1);
+  } catch {
+    return undefined;
+  }
 }

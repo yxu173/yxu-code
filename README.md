@@ -272,6 +272,7 @@ ids, repo files, on/off. Commands also work while a run is going (changes apply 
 | `/concurrency [n]` `/resolver [agent\|off]` `/verify [command\|off]` | how agents run and are checked |
 | `/context …` `/compact …` | what the orchestrator sees; conversation compaction (below) |
 | `/tasks` `/diff <task>` `/apply <task>` `/discard <task>` | results |
+| `/watch [task\|off]` `/tell [task] <message>` `/pause` `/resume` `/takeover` `/done` | watch an agent live and step in (below) |
 | `/panel [on\|off]` `/motion on\|off` `/ascii on\|off` | the interface |
 | `/save [project\|local\|user]` | write this session's setting changes to yxu.yaml, yxu.local.yaml or your user config (comments kept, validated first) |
 | `/config [key]` | every setting and the config layer it came from |
@@ -290,6 +291,23 @@ still accepted (Command Code takes short names) but flagged. Outside the TUI:
 Changes are for the current session until you `/save`. `/status` shows how many are unsaved.
 Task ids can be the short suffix shown in the panel. The palette, `/help`, and execution all
 come from one registry (`src/tui/commands.ts`).
+
+### Watching an agent and stepping in
+
+`/watch` opens a wider side panel on a running agent. It shows the agent's tool calls as they
+happen, the files it has changed so far (+/−), and the last lines of its diff. With no task
+named, it follows whichever agent is running. You can step in at any point:
+
+| | |
+|---|---|
+| `/tell [task] <message>` | a correction mid-task ("use the existing helper in utils.ts"): the agent stops and continues with it, keeping its work. OpenCode and Claude continue their own session; other CLIs start again in the same worktree, told what happened |
+| `/pause` · `/resume` | freeze the agent (its timeout too) and let it go on (Linux and macOS) |
+| `/takeover` | stop the agent and finish the task yourself: its worktree opens in your editor (VS Code, Cursor, Zed…, or `YXU_EDITOR`) |
+| `/done` | hand a task you took over back: your edits and the agent's are its result, and the orchestrator carries on |
+
+Tool calls stream live for OpenCode and Claude (and ACP agents). For other CLIs, the panel still
+shows the diff as it grows. Steering, pausing and taking over work for every CLI agent except ACP
+ones.
 
 ### The repo map
 

@@ -18,6 +18,12 @@ export const opencode: Adapter = {
     return argv;
   },
 
+  resume(task, profile, sessionId) {
+    const argv = opencode.command(task, profile);
+    argv.splice(argv.length - 1, 0, "--session", sessionId);
+    return argv;
+  },
+
   parse(stdout, stderr, exitCode) {
     const events: AgentEvent[] = [];
     const usage = emptyUsage();

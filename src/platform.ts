@@ -89,6 +89,8 @@ export interface SpawnOptions {
   detached?: boolean;
   /** Text written to the child's stdin (otherwise stdin is closed). */
   stdin?: string;
+  /** Called with stdout as it arrives (the full text is still in the result). */
+  onStdout?: (chunk: string) => void;
 }
 
 /**
@@ -122,10 +124,24 @@ export function start(argv: string[], opts: SpawnOptions = {}): Child {
     stdout: "pipe",
     stderr: "pipe",
   });
-  const result = Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]).then(
-    async ([stdout, stderr]) => ({ code: await proc.exited, stdout, stderr }),
-  );
+  const out = opts.onStdout ? streamText(proc.stdout, opts.onStdout) : new Response(proc.stdout).text();
+  const result = Promise.all([out, new Response(proc.stderr).text()]).then(async ([stdout, stderr]) => ({ code: await proc.exited, stdout, stderr }));
   return { pid: proc.pid, result, kill: (signal) => proc.kill(signal) };
+}
+
+async function streamText(stream: ReadableStream<Uint8Array>, on: (chunk: string) => void): Promise<string> {
+  const decoder = new TextDecoder();
+  let all = "";
+  for await (const bytes of stream) {
+    const chunk = decoder.decode(bytes, { stream: true });
+    all += chunk;
+    try {
+      on(chunk);
+    } catch {
+      // a viewer's problem never stops the agent
+    }
+  }
+  return all + decoder.decode();
 }
 
 export interface Duplex {
@@ -177,6 +193,17 @@ export async function runAttached(argv: string[], opts: SpawnOptions & { stdin?:
 }
 
 /** End a process and everything it started: its process group on Unix, its tree on Windows. */
+/** Pause or continue a process group (Unix). Returns false where it can't (Windows). */
+export function signalGroup(pid: number, signal: "SIGSTOP" | "SIGCONT"): boolean {
+  if (isWindows) return false;
+  try {
+    process.kill(-pid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function killGroup(pid: number, signal: NodeJS.Signals) {
   if (isWindows) {
     // Console programs ignore taskkill's polite close, so the tree is always ended forcibly.
