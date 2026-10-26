@@ -7,6 +7,7 @@ import { agentRefs, parseDuration } from "../config.ts";
 import { tryGit } from "../git.ts";
 import { which } from "../platform.ts";
 import { liveTasks } from "../runner.ts";
+import { ago, listSessions } from "../sessions.ts";
 import type { CliName } from "../types.ts";
 import { commandUsage, type UserCommand } from "../user-commands.ts";
 import { catalogKey, keyLabel } from "../models.ts";
@@ -129,6 +130,13 @@ function removeAgent(app: App, name: string | undefined) {
   // null removes it from lower layers too (the built-in team, packs, your user config).
   app.setConfig(["agents", name], undefined, null);
   app.changed(`Removed ${name}`);
+}
+
+/** This repository's saved sessions, newest first. */
+function sessionSuggestions(app: App): Suggestion[] {
+  return listSessions({ root: app.root })
+    .slice(0, 30)
+    .map((s) => ({ value: s.id, description: `${s.title} · ${s.conversation.turn} turns · ${ago(s.updatedAt)}` }));
 }
 
 /** Agents running right now, for /watch, /tell, /pause … */
@@ -525,6 +533,23 @@ export const COMMANDS: Command[] = [
     run: (app, [id]) => app.taskAction("apply", id),
   },
   {
+    name: "sessions",
+    usage: "[all|here]",
+    description: "Saved sessions: this repo's, every repo's (all), or this folder's (here)",
+    group: "session",
+    complete: (_app, i) => (i === 0 ? [{ value: "all", description: "every repository" }, { value: "here", description: "started in this folder" }] : []),
+    run: (app, [arg]) => app.listSessionsCommand(arg ?? ""),
+  },
+  {
+    name: "resume",
+    usage: "<session|last>",
+    description: "Continue a saved session of this repo: its conversation and pending results",
+    group: "session",
+    complete: (app, i) => (i === 0 ? sessionSuggestions(app) : []),
+    run: (app, [id]) => app.resumeCommand(id ?? ""),
+  },
+  { name: "rename", usage: "[title]", description: "Name this session (shown by /sessions and yxu sessions)", group: "session", run: (app, args) => app.renameSession(args.join(" ")) },
+  {
     name: "watch",
     usage: "[task|off]",
     description: "Watch a running agent live in the side panel: its tool calls and diff",
@@ -542,7 +567,7 @@ export const COMMANDS: Command[] = [
     run: (app, args) => app.tell(args),
   },
   { name: "pause", usage: "[task]", description: "Pause a running agent (its timeout too)", group: "tasks", complete: (_app, i) => (i === 0 ? liveSuggestions() : []), run: (app, [id]) => app.liveAction("pause", id) },
-  { name: "resume", usage: "[task]", description: "Continue a paused agent", group: "tasks", complete: (_app, i) => (i === 0 ? liveSuggestions() : []), run: (app, [id]) => app.liveAction("resume", id) },
+  { name: "continue", usage: "[task]", description: "Let a paused agent go on", group: "tasks", complete: (_app, i) => (i === 0 ? liveSuggestions() : []), run: (app, [id]) => app.liveAction("resume", id) },
   {
     name: "takeover",
     usage: "[task]",

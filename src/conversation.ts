@@ -3,10 +3,8 @@
  * background. A summary is a compacted fork of the conversation as it was after some turn; it is
  * never thrown away because the conversation moved on: the next turn resumes the summary and
  * is told what happened since (the turns after it, and the end of a run it was made during).
- * The interface keeps one in memory; `yxu run --continue` keeps one in .yxu/conversation.json.
+ * Sessions (sessions.ts) save it, so any of them can be resumed.
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
 
 export interface TurnRecord {
   turn: number;
@@ -123,28 +121,4 @@ export function sincePreamble(tail: string | undefined, since: TurnRecord[]): st
   // Keep the most recent part when there is too much.
   if (body.length > SINCE_CHARS) body = `… (earlier details omitted)\n${body.slice(-SINCE_CHARS)}`;
   return `[yxu] This conversation was summarized in the background, and it continued after the summary was taken. Here is what happened since, so you can pick up where it left off:\n\n${body}\n\n[yxu] Now the user says:\n`;
-}
-
-// ── persistence (`yxu run --continue`) ───────────────────────────────────
-
-export const conversationPath = (root: string) => join(root, ".yxu", "conversation.json");
-
-export function loadConversation(root: string): Conversation | undefined {
-  const file = conversationPath(root);
-  if (!existsSync(file)) return undefined;
-  try {
-    const s = JSON.parse(readFileSync(file, "utf8")) as ConversationState;
-    return typeof s.id === "string" && Array.isArray(s.log) ? new Conversation(s) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Written whole and renamed into place, so a reader never sees half a file. */
-export function saveConversation(root: string, c: Conversation) {
-  const file = conversationPath(root);
-  mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify(c.state, null, 2)}\n`);
-  renameSync(tmp, file);
 }

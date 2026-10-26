@@ -4,6 +4,8 @@ import { demoBackend, demoEngine } from "./demo.ts";
 import { Terminal } from "./terminal.ts";
 import { createTheme, type ThemeOptions } from "./theme.ts";
 
+import type { SessionFile } from "../sessions.ts";
+
 export interface TuiOptions extends ThemeOptions {
   cfg: Config;
   root: string;
@@ -12,6 +14,10 @@ export interface TuiOptions extends ThemeOptions {
   demo?: boolean;
   /** --set overrides the config was loaded with (shown by /config). */
   sets?: string[];
+  /** A saved session to continue. */
+  resume?: SessionFile;
+  /** Where yxu was started (recorded with the session). */
+  folder?: string;
 }
 
 /** Launch the interactive interface. Resolves with the results still waiting for a decision. */
@@ -30,6 +36,8 @@ export function runTui(opts: TuiOptions): Promise<{ pending: { taskId: string; a
       workflow: opts.workflow,
       demo: opts.demo,
       sets: opts.sets,
+      resume: opts.resume,
+      folder: opts.folder,
       engine: opts.demo ? demoEngine() : productionEngine(opts.root),
       backend: opts.demo ? demoBackend(() => app.taskSession) : undefined,
       historyFile: opts.demo ? null : undefined,

@@ -272,7 +272,8 @@ ids, repo files, on/off. Commands also work while a run is going (changes apply 
 | `/concurrency [n]` `/resolver [agent\|off]` `/verify [command\|off]` | how agents run and are checked |
 | `/context …` `/compact …` | what the orchestrator sees; conversation compaction (below) |
 | `/tasks` `/diff <task>` `/apply <task>` `/discard <task>` | results |
-| `/watch [task\|off]` `/tell [task] <message>` `/pause` `/resume` `/takeover` `/done` | watch an agent live and step in (below) |
+| `/watch [task\|off]` `/tell [task] <message>` `/pause` `/continue` `/takeover` `/done` | watch an agent live and step in (below) |
+| `/sessions [all\|here]` `/resume <session>` `/rename <title>` | saved sessions (below) |
 | `/panel [on\|off]` `/motion on\|off` `/ascii on\|off` | the interface |
 | `/save [project\|local\|user]` | write this session's setting changes to yxu.yaml, yxu.local.yaml or your user config (comments kept, validated first) |
 | `/config [key]` | every setting and the config layer it came from |
@@ -292,6 +293,29 @@ Changes are for the current session until you `/save`. `/status` shows how many 
 Task ids can be the short suffix shown in the panel. The palette, `/help`, and execution all
 come from one registry (`src/tui/commands.ts`).
 
+### Sessions
+
+Every conversation with yxu is a session, saved for you (not in the repo) in
+`~/.local/share/yxu/sessions` (`YXU_DATA_DIR` or `XDG_DATA_HOME` to move it). Each session records
+the repository and the folder it was started in, its turns, the orchestrator's memory
+(including background summaries), and the tasks it made. Resuming one brings back the
+conversation and its results that are still pending.
+
+```sh
+yxu sessions                 # this repository's sessions, newest first
+yxu sessions --here          # only those started in this folder
+yxu sessions --all           # every repository's, grouped (also what you get outside a repo)
+yxu resume                   # pick one from a list; or: yxu resume <id> | last, from any folder
+yxu -c                       # open the interface on this repo's latest session
+yxu run -c "and add tests"   # continue this repo's latest session from a script; -s <id> for a given one
+yxu sessions rename <id> "Login work" · yxu sessions rm <id>
+```
+
+`yxu resume <id>` works from any folder: it switches to the session's repository (Claude keeps
+its conversations per directory) and opens the interface. Sessions are titled by their first
+message; in the interface, `/sessions [all|here]` lists them, `/resume <id>` switches to another
+of this repo's, `/rename` names this one, and `/new` starts a new one.
+
 ### Watching an agent and stepping in
 
 `/watch` opens a wider side panel on a running agent. It shows the agent's tool calls as they
@@ -301,7 +325,7 @@ named, it follows whichever agent is running. You can step in at any point:
 | | |
 |---|---|
 | `/tell [task] <message>` | a correction mid-task ("use the existing helper in utils.ts"): the agent stops and continues with it, keeping its work. OpenCode and Claude continue their own session; other CLIs start again in the same worktree, told what happened |
-| `/pause` · `/resume` | freeze the agent (its timeout too) and let it go on (Linux and macOS) |
+| `/pause` · `/continue` | freeze the agent (its timeout too) and let it go on (Linux and macOS) |
 | `/takeover` | stop the agent and finish the task yourself: its worktree opens in your editor (VS Code, Cursor, Zed…, or `YXU_EDITOR`) |
 | `/done` | hand a task you took over back: your edits and the agent's are its result, and the orchestrator carries on |
 
@@ -383,7 +407,7 @@ the orchestrator until it is done. yxu summarizes in the background instead, so 
   since (those turns, or the end of the run it was made during). Only one summary is made at a
   time, and only when the conversation itself is at least a tenth of the window (a summary can't
   shrink the system prompt and tools, so it would only repeat).
-- **`yxu run -c`** (`--continue`) continues the repo's last conversation (`.yxu/conversation.json`).
+- **`yxu run -c`** (`--continue`) continues the repo's latest session (see Sessions).
   After a `-c` run past `background_at`, a detached process summarizes it, so your shell is not
   held; the next `yxu run -c` continues from the summary. (A one-off `yxu run` isn't summarized
   afterwards: that summary would usually go unused.)
