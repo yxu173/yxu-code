@@ -30,7 +30,7 @@ const ctxInfo: ContextInfo = {
   projectInstructions: true,
   include: [],
   hasNotes: false,
-  compact: { auto: true, window: "auto", warnAt: 0.8 },
+  compact: { auto: true, window: "auto", warnAt: 0.8, background: true },
 };
 
 // ── keys ─────────────────────────────────────────────────────────────────────
@@ -558,6 +558,71 @@ describe("context & compaction controls", () => {
     expect(screen()).toContain("Removed ARCH.md");
     app.input("/context bogus\r");
     expect(screen()).toContain('unknown /context option "bogus"');
+    app.dispose();
+    teardown();
+  });
+
+  test("background compaction: summarizes a fork after a turn without blocking, and a new turn wins", async () => {
+    setup();
+    const runs: { resume?: string }[] = [];
+    const forks: { sessionId: string; fork?: boolean; abort: AbortController; finish: () => void }[] = [];
+    const engine: Engine = {
+      async run({ session, resume }) {
+        runs.push({ resume });
+        return { runId: "r", ok: true, finalText: "ok", costUsd: 0, session, sdkSessionId: resume ?? "sess-1", context: usage(70) } as RunOutcome;
+      },
+      compact: ({ sessionId, fork, abort }) =>
+        new Promise((resolve) => {
+          const compaction = { trigger: "manual" as const, preTokens: 140_000, postTokens: 20_000 };
+          const finish = () => resolve(abort.signal.aborted ? { ok: false, error: "cancelled", costUsd: 0 } : { ok: true, compaction, context: usage(10), costUsd: 0.01, sessionId: `${sessionId}-compacted` });
+          abort.signal.addEventListener("abort", finish);
+          forks.push({ sessionId, fork, abort, finish });
+        }),
+    };
+    const { app, screen } = appAt(root, engine);
+    app.input("first\r");
+    await app.idle();
+    // 70% ≥ 60%: a fork is being compacted, and the interface is free.
+    expect(forks).toHaveLength(1);
+    expect(forks[0]).toMatchObject({ sessionId: "sess-1", fork: true });
+    expect(app.store.state.status).not.toBe("working");
+    expect(screen()).toMatch(/compact\s+summarizing…/);
+
+    // A new message doesn't wait: it continues the full conversation and cancels the summary.
+    app.input("second\r");
+    await app.idle();
+    expect(runs[1]!.resume).toBe("sess-1");
+    expect(forks[0]!.abort.signal.aborted).toBe(true);
+    await Bun.sleep(1);
+    expect(screen()).not.toContain("compacted in the background"); // the cancelled fork changed nothing
+
+    // After that turn, a new fork; this time nothing interrupts it, so the summary takes over.
+    expect(forks).toHaveLength(2);
+    forks[1]!.finish();
+    await app.backgroundCompaction();
+    let s = screen();
+    expect(s).toContain("Conversation compacted in the background: 140k → 20k tokens");
+    expect(s).toMatch(/window\s+▰▱▱▱▱▱▱▱ 10%/);
+    app.input("third\r");
+    await app.idle();
+    expect(runs[2]!.resume).toBe("sess-1-compacted");
+
+    // Off: no more background work; the threshold is adjustable.
+    forks.at(-1)!.finish();
+    await Bun.sleep(1);
+    app.input("/compact background off\r");
+    app.input("fourth\r");
+    await app.idle();
+    const count = forks.length;
+    app.input("fifth\r");
+    await app.idle();
+    expect(forks.length).toBe(count);
+    app.input("/compact background 99%\r");
+    expect(screen()).toContain("usage: /compact background on|off|<10–95%>");
+    app.input("/compact background 80%\r");
+    app.input("/compact background on\r");
+    expect(app.cfg.compact).toMatchObject({ background: true, background_at: 0.8 });
+    expect(forks.length).toBe(count); // 70% < 80%: nothing to do
     app.dispose();
     teardown();
   });

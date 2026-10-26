@@ -286,6 +286,8 @@ compact:
   window: 200k                # or "auto" (the model's window); 100k-1m
   instructions: Keep API names and the user's decisions.
   warn_at: 0.8                # TUI warns past 80% of the window
+  background: true            # TUI: compact between turns without blocking (below)
+  background_at: 0.6          # …once the conversation passes 60% of the window
 ```
 
 | in the TUI | effect |
@@ -299,6 +301,16 @@ compact:
 | `/compact [extra instructions]` | summarize the conversation now; shows before → after tokens |
 | `/compact auto on\|off` · `/compact window <200k\|auto>` | auto-compaction and its window |
 | `/compact instructions <text>` · `/compact warn <80%>` | what summaries must keep; warning level |
+| `/compact background on\|off\|<60%>` | background compaction, and where it starts |
+
+**Background compaction.** Claude Code compacts on its own when the window fills, and that pauses
+the orchestrator in the middle of a run. To avoid it, when a turn ends past `background_at`, the interface
+summarizes a *copy* (a forked session) of the conversation in the background. You keep reading,
+typing and sending; the panel shows `compact summarizing…`. When the summary is ready, the next
+message continues from it. If you send a message first, that message continues the full
+conversation and the copy is dropped (the summary would miss it); the next turn's end tries
+again. Claude Code's own auto-compaction stays as the fallback. Measured with Haiku: a 31k-token
+conversation summarized to 839 tokens in about 8 seconds, with the input free the whole time.
 
 The panel shows a context gauge (`▰▰▱▱▱▱▱▱ 20% 40k/200k`, amber past `warn_at`), the
 compaction mode, and what was added. Automatic compactions appear in the conversation with

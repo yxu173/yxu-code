@@ -74,7 +74,7 @@ export interface ContextInfo {
   projectInstructions: boolean;
   include: string[];
   hasNotes: boolean;
-  compact: { auto: boolean; window: number | "auto"; warnAt: number };
+  compact: { auto: boolean; window: number | "auto"; warnAt: number; background: boolean };
 }
 
 export interface State {
@@ -97,6 +97,8 @@ export interface State {
   turn: number;
   /** Last reported context-window usage of the orchestrator conversation. */
   usage?: ContextUsage;
+  /** A copy of the conversation is being compacted in the background. */
+  compactingInBackground?: boolean;
   /** Slash-command palette, open while the draft starts with "/". */
   palette?: PaletteState;
   /** Rows scrolled up from the bottom; 0 follows new output. */

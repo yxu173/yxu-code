@@ -487,8 +487,10 @@ export const COMMANDS: Command[] = [
           { value: "window", description: "window to compact against (100k–1m, auto)" },
           { value: "instructions", description: "what summaries must keep" },
           { value: "warn", description: "warn at this % of the window" },
+          { value: "background", description: "compact between turns without blocking: on|off, or start at % of the window" },
         ];
       if (i === 1 && before[0] === "auto") return ON_OFF;
+      if (i === 1 && before[0] === "background") return [...ON_OFF, ...["50%", "60%", "70%"].map((v) => ({ value: v, description: "start at this % of the window" }))];
       if (i === 1 && before[0] === "window") return ["auto", "200k", "400k", "1m"].map((v) => ({ value: v }));
       if (i === 1 && before[0] === "warn") return ["70%", "80%", "90%"].map((v) => ({ value: v }));
       return [];

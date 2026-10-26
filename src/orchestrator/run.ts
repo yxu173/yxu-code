@@ -274,13 +274,16 @@ export async function compactConversation(opts: {
   /** Extra instructions for this compaction, on top of compact.instructions. */
   instructions?: string;
   render?: DrainRender;
-}): Promise<{ ok: boolean; error?: string; compaction?: CompactInfo; context?: ContextUsage; costUsd: number }> {
+  /** Compact a copy (a forked session) and leave the original as it is: for background compaction. */
+  fork?: boolean;
+}): Promise<{ ok: boolean; error?: string; compaction?: CompactInfo; context?: ContextUsage; costUsd: number; sessionId?: string }> {
   const q = query({
     prompt: `/compact ${compactInstructions(opts.cfg, opts.instructions)}`,
-    options: { ...baseOptions(opts.cfg, opts.root, opts.abort), resume: opts.sessionId },
+    options: { ...baseOptions(opts.cfg, opts.root, opts.abort), resume: opts.sessionId, ...(opts.fork ? { forkSession: true } : {}) },
   });
   const r = await drain(q, opts.render, opts.abort.signal);
   const compaction = r.compactions.at(-1);
   if (!compaction) return { ok: false, error: r.cancelled ? "cancelled" : r.text || "no compaction happened", costUsd: r.costUsd, context: r.context };
-  return { ok: true, compaction, context: r.context, costUsd: r.costUsd };
+  // A fork has its own session id: continue from it.
+  return { ok: true, compaction, context: r.context, costUsd: r.costUsd, sessionId: opts.fork ? r.sessionId : opts.sessionId };
 }
