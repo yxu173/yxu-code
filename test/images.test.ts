@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { parseConfig } from "../src/config.ts";
 import { attach, clipboardImage, findImagePaths, sniff, withImages, type Attachment } from "../src/images.ts";
 import type { RunOutcome } from "../src/orchestrator/run.ts";
@@ -53,7 +54,7 @@ describe("images", () => {
     expect(found(`see "${p}"`)).toEqual([p]);
     // Unix terminals escape spaces in dropped paths (on Windows the backslash is the separator; it quotes instead).
     if (process.platform !== "win32") expect(found(`see ${p.replace(/ /g, "\\ ")}`)).toEqual([p]);
-    expect(found(`file://${encodeURI(p)}`)).toEqual([p]);
+    expect(found(pathToFileURL(p).href)).toEqual([p]);
     expect(found("look at './shot one.png'")).toEqual([p]);
     expect(found(`${join(dir, "notes.txt")} and /nope/x.png`)).toEqual([]);
   });

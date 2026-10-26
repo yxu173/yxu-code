@@ -7,6 +7,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { isWindows, resolveArgv, runSync, which } from "./platform.ts";
 
@@ -57,7 +58,13 @@ export function findImagePaths(text: string, cwd: string): { raw: string; path: 
   const re = new RegExp(String.raw`'(${start}[^'\n]*)'|"(${start}[^"\n]*)"|(${start}(?:\\ |[^\s'"])+)`, "g");
   for (const m of text.matchAll(re)) {
     let p = (m[1] ?? m[2] ?? m[3] ?? "").trim();
-    if (p.startsWith("file://")) p = decodeURIComponent(p.slice(7));
+    if (p.startsWith("file://")) {
+      try {
+        p = fileURLToPath(p); // file:///C:/a%20b.png on Windows, file:///tmp/a%20b.png elsewhere
+      } catch {
+        continue;
+      }
+    }
     p = p.replace(/\\ /g, " ");
     if (!EXT.test(p)) continue;
     if (p.startsWith("~")) p = join(homedir(), p.slice(1));
