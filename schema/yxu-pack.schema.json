@@ -432,6 +432,18 @@
               "type": "number",
               "minimum": 0.1,
               "maximum": 1
+            },
+            "background": {
+              "default": true,
+              "description": "Interface: after a turn, compact a copy of the conversation in the background; you keep working, and the summary takes over when it is ready",
+              "type": "boolean"
+            },
+            "background_at": {
+              "default": 0.6,
+              "description": "Start background compaction when context use passes this fraction of the window (before Claude Code's own auto-compaction, which pauses the run)",
+              "type": "number",
+              "minimum": 0.1,
+              "maximum": 0.95
             }
           }
         },

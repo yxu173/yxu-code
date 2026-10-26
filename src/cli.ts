@@ -4,13 +4,15 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { getWorkflow, orchestratorLabel, loadConfig, toProfile, type Config } from "./config.ts";
 import { loadLayers } from "./config-layers.ts";
-import { buildContextPrompt, compactSettings, formatTokens, settingSources } from "./context.ts";
+import { buildContextPrompt, compactSettings, formatTokens, settingSources, worthCompacting } from "./context.ts";
 import { applyWithHooks, discardTask } from "./actions.ts";
 import { combineTasks, readTaskRecord } from "./combine.ts";
 import { repoRoot } from "./git.ts";
 import { Session, TaskOps } from "./ops.ts";
 import { runPipeline } from "./orchestrator/pipeline.ts";
-import { orchestratorPrompt, runOrchestrator, sessionPath, type OrchestratorRender } from "./orchestrator/run.ts";
+import { compactConversation, orchestratorPrompt, runOrchestrator, sessionPath, type OrchestratorRender, type RunOutcome } from "./orchestrator/run.ts";
+import { Conversation, loadConversation, saveConversation } from "./conversation.ts";
+import { spawn } from "node:child_process";
 import { createYxuServer, SERVER_NAME, TOOL_NAMES } from "./orchestrator/tools.ts";
 import { claudeExecutable, isCompiled, runAttached, runSync, VERSION, which } from "./platform.ts";
 import { update } from "./update.ts";
@@ -30,9 +32,10 @@ Usage:
   yxu                       open the interactive interface (same as yxu tui)
   yxu tui [-w workflow] [--ascii] [--reduced-motion] [--no-color] [--demo]
                             interactive interface; --demo replays a scripted run (no agents)
-  yxu run "<goal>" [-w workflow] [--model M] [--budget USD] [-i name=value]... [--yes]
+  yxu run "<goal>" [-w workflow] [--model M] [--budget USD] [-i name=value]... [--yes] [-c]
                             Claude (Opus) plans and delegates to your local agents;
-                            pipelines take --input values, --yes approves their gates
+                            pipelines take --input values, --yes approves their gates;
+                            -c (--continue) continues the last conversation in this repo
   yxu chat ["<first message>"] [-w workflow] [--model M] [--allow-edits] [--user-settings] [-p]
                             interactive Claude Code with the yxu tools
   yxu mcp [-w workflow]     stdio MCP server with the yxu tools (for any MCP client)
@@ -213,6 +216,7 @@ async function run(argv: string[]) {
       set: { type: "string", multiple: true },
       input: { type: "string", short: "i", multiple: true },
       yes: { type: "boolean", short: "y" },
+      continue: { type: "boolean", short: "c" },
     },
   });
   let goal = positionals.join(" ").trim();
@@ -281,11 +285,18 @@ async function run(argv: string[]) {
 
     const r = makeRenderer(cfg);
     const session = new Session();
+    // Auto runs are remembered in .yxu/conversation.json; --continue picks the last one up.
+    const auto = workflow.mode === "auto";
+    const conv = (values.continue && loadConversation(root)) || new Conversation();
+    if (values.continue && !conv.sessionId) console.log(dim("(no earlier conversation in this repo: starting a new one)\n"));
+    const next = auto && values.continue ? conv.next() : { usesSummary: false };
+    if (next.usesSummary) console.log(dim("(continuing from a background summary of the conversation)\n"));
     const outcome = await withRunHooks(cfg, root, { goal, workflow: workflow.name, session, signal: ac.signal }, () =>
       workflow.mode === "pipeline"
         ? runPipeline({ goal, cfg, workflow, root, abort: ac, render: r.render, inputs, gate: cliGate(values.yes), session })
-        : runOrchestrator({ goal, cfg, workflow, root, abort: ac, render: r.render, session }),
+        : runOrchestrator({ goal, cfg, workflow, root, abort: ac, render: r.render, session, resume: next.resume, preamble: next.preamble }),
     );
+    if (auto && !outcome.cancelled) await rememberConversation(root, cfg, conv, { goal, outcome, usedSummary: next.usesSummary, continuing: Boolean(values.continue) });
 
     // The final report is usually the last assistant message, already printed above.
     if (outcome.finalText.trim() !== r.lastText()) console.log(`${bold("─── result ───")}\n${outcome.finalText}\n`);
@@ -297,6 +308,46 @@ async function run(argv: string[]) {
     );
     return outcome;
   }
+}
+
+/**
+ * After an auto run: save the conversation for `yxu run --continue`, keep a summary made during the
+ * run, and if the window is filling, summarize it in a detached process (the shell is not held).
+ */
+async function rememberConversation(root: string, cfg: Config, conv: Conversation, t: { goal: string; outcome: RunOutcome; usedSummary: boolean; continuing: boolean }) {
+  const disk = loadConversation(root);
+  // A summary finished by a detached process during this run belongs to this conversation too.
+  if (disk?.state.id === conv.state.id && disk.summary && !conv.summary && !t.usedSummary) conv.state.summary = disk.summary;
+  conv.finish({ goal: t.goal, finalText: t.outcome.finalText, sessionId: t.outcome.sdkSessionId, usedSummary: t.usedSummary });
+  const left = t.outcome.backgroundSummary;
+  if (left && !conv.summary && t.continuing) {
+    // Started near the end of the run: usually seconds from done. Ctrl-C skips it.
+    console.log(dim("finishing the background summary for `yxu run -c`… (Ctrl-C skips)"));
+    const done = await left.done;
+    if (done?.sessionId) conv.adopt(conv.state.id, { sessionId: done.sessionId, afterTurn: conv.turn, tail: left.tail || undefined, preTokens: done.compaction?.preTokens, postTokens: done.compaction?.postTokens });
+  }
+  saveConversation(root, conv);
+  const k = cfg.compact;
+  const u = t.outcome.context;
+  // Only for conversations being continued (-c): a summary of a one-off run would go unused.
+  if (t.continuing && !conv.summary && conv.sessionId && k.auto && k.background && u && worthCompacting(u, k)) {
+    const [cmd, ...args] = selfCommand();
+    const child = spawn(cmd!, [...args, "__summarize", conv.state.id, conv.sessionId, String(conv.turn)], { cwd: root, detached: true, stdio: "ignore" });
+    child.unref();
+    console.log(dim(`context ${Math.round(u.percentage)}%: summarizing it in the background for the next \`yxu run -c\``));
+  }
+}
+
+/** `yxu __summarize <conversation> <session> <turn>`: the detached half of rememberConversation. */
+async function summarizeDetached([convId, sessionId, turn]: string[]) {
+  const root = repoRoot(process.cwd());
+  const cfg = loadConfig(root);
+  const r = await compactConversation({ cfg, root, sessionId: sessionId!, abort: new AbortController(), fork: true });
+  if (!r.ok || !r.sessionId) return;
+  const conv = loadConversation(root);
+  // Only if the conversation is still the one summarized and no other summary arrived first.
+  if (!conv || conv.summary || !conv.adopt(convId!, { sessionId: r.sessionId, afterTurn: Number(turn), preTokens: r.compaction?.preTokens, postTokens: r.compaction?.postTokens })) return;
+  saveConversation(root, conv);
 }
 
 /** Agent tool approvals on the command line: a terminal asks; without one, they are refused. */
@@ -364,6 +415,14 @@ function makeRenderer(cfg: Config) {
       }
       const arg = input.file_path ?? input.pattern ?? input.task_id ?? input.path ?? "";
       console.log(dim(`  · ${short} ${String(arg)}`.trimEnd()));
+    },
+    compacted: (info) => {
+      const tokens = `${Math.round(info.preTokens / 1000)}k${info.postTokens !== undefined ? ` → ${Math.round(info.postTokens / 1000)}k` : ""} tokens`;
+      console.log(
+        info.trigger === "background"
+          ? `⁘ ${dim(`summarized in the background while subagents worked (${tokens}); the run continues from the summary`)}\n`
+          : `⁘ ${dim(`conversation compacted (${info.trigger}, ${tokens})`)}\n`,
+      );
     },
     step: ({ id, type, index, total, note }) =>
       type === "fix"
@@ -726,6 +785,9 @@ try {
       break;
     case "run":
       await run(rest);
+      break;
+    case "__summarize":
+      await summarizeDetached(rest);
       break;
     case "delegate":
       await delegate(rest);

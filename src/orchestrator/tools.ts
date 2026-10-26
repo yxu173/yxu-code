@@ -23,13 +23,29 @@ const safe =
     }
   };
 
+/** A long tool (subagents, merges, checks): the orchestrator waits on it, so compaction can run meanwhile. */
+const watched =
+  <A>(watch: ToolWatch | undefined, name: string, fn: (args: A) => Promise<ReturnType<typeof text>>) =>
+  async (args: A) => {
+    watch?.toolStart();
+    const res = await safe(fn)(args);
+    watch?.toolEnd(name, res.content.map((c) => c.text).join("\n"));
+    return res;
+  };
+
 const TaskInput = {
   agent: z.string(),
   task: z.string().min(1).describe("Complete, self-contained instructions, including file paths and acceptance criteria."),
   build_on: z.string().optional().describe("task_id of an earlier task whose changes this task should start from."),
 };
 
-export function createYxuServer(ops: TaskOps) {
+/** Told when yxu tools start and end (background compaction during a run, see MidRunCompactor). */
+export interface ToolWatch {
+  toolStart(): void;
+  toolEnd(tool: string, text: string): void;
+}
+
+export function createYxuServer(ops: TaskOps, watch?: ToolWatch) {
   const { cfg, allowed } = ops;
   const { concurrency } = cfg.settings;
   const agentDesc = `Agent name. One of: ${allowed.join(", ")}`;
@@ -55,7 +71,7 @@ export function createYxuServer(ops: TaskOps) {
       "the subagent cannot see this conversation. Use build_on to start from an earlier task's result " +
       "(for dependent tasks or fix-ups); otherwise the task starts from the user's current HEAD.",
     { ...TaskInput, agent: z.string().describe(agentDesc) },
-    safe(async ({ agent, task, build_on }) => text(ops.format(await ops.delegate(agent, task, build_on)))),
+    watched(watch, "delegate", async ({ agent, task, build_on }) => text(ops.format(await ops.delegate(agent, task, build_on)))),
   );
 
   const delegateParallel = tool(
@@ -64,7 +80,7 @@ export function createYxuServer(ops: TaskOps) {
       "Use it when tasks touch different files and don't depend on each other. Afterwards, call combine " +
       "to merge the successful results into one task the user can apply.",
     { tasks: z.array(z.object({ ...TaskInput, agent: z.string().describe(agentDesc) })).min(2).max(12) },
-    safe(async ({ tasks }) => {
+    watched(watch, "delegate_parallel", async ({ tasks }) => {
       const settled = await ops.delegateMany(tasks.map((t) => ({ agent: t.agent, task: t.task, buildOn: t.build_on })));
       const parts = settled.map((s, i) =>
         s.status === "fulfilled"
@@ -86,7 +102,7 @@ export function createYxuServer(ops: TaskOps) {
       task_ids: z.array(z.string()).min(2),
       resolver: z.string().optional().describe(`Agent to resolve conflicts. One of: ${allowed.join(", ")}`),
     },
-    safe(async ({ task_ids, resolver }) => {
+    watched(watch, "combine", async ({ task_ids, resolver }) => {
       const r = await ops.combine(task_ids, resolver);
       return text(ops.format(r, r.conflicts ? [`conflicts: ${r.conflicts.join(", ")}`] : []));
     }),
@@ -101,7 +117,7 @@ export function createYxuServer(ops: TaskOps) {
       task_id: z.string().describe("Task whose result to check."),
       command: z.string().optional().describe("Shell command to run instead of the default."),
     },
-    safe(async ({ task_id, command }) => text(ops.formatVerify(await ops.verify(task_id, command)))),
+    watched(watch, "verify", async ({ task_id, command }) => text(ops.formatVerify(await ops.verify(task_id, command)))),
   );
 
   const getDiff = tool(

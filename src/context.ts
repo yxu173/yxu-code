@@ -86,6 +86,17 @@ export interface ContextUsage {
   categories: { name: string; tokens: number; kind: string }[];
 }
 
+/**
+ * Whether a background summary is worth making: the window is past compact.background_at, and
+ * the conversation itself (what a summary shrinks, unlike the system prompt and tools) is at least
+ * a tenth of the window. Otherwise a summary would land above the threshold again and repeat.
+ */
+export function worthCompacting(u: ContextUsage | undefined, k: { background_at: number }): boolean {
+  if (!u || u.max <= 0 || u.percentage / 100 < k.background_at) return false;
+  const messages = u.categories.find((c) => /messages/i.test(c.name));
+  return !messages || messages.tokens >= 0.1 * u.max;
+}
+
 export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 ? 1 : 0)}m`;
   if (n >= 1000) return `${Math.round(n / 1000)}k`;

@@ -286,6 +286,8 @@ compact:
   window: 200k                # or "auto" (the model's window); 100k-1m
   instructions: Keep API names and the user's decisions.
   warn_at: 0.8                # TUI warns past 80% of the window
+  background: true            # TUI: compact between turns without blocking (below)
+  background_at: 0.6          # …once the conversation passes 60% of the window
 ```
 
 | in the TUI | effect |
@@ -299,6 +301,32 @@ compact:
 | `/compact [extra instructions]` | summarize the conversation now; shows before → after tokens |
 | `/compact auto on\|off` · `/compact window <200k\|auto>` | auto-compaction and its window |
 | `/compact instructions <text>` · `/compact warn <80%>` | what summaries must keep; warning level |
+| `/compact background on\|off\|<60%>` | background compaction, and where it starts |
+
+**Background compaction.** Claude Code compacts on its own when the window fills, and that pauses
+the orchestrator until it is done. yxu summarizes in the background instead, so it never has to:
+
+- **During a run** (the interface and `yxu run`): while the orchestrator waits on a subagent
+  (`delegate`, `delegate_parallel`, `combine`, `verify`) and the window is past `background_at`, yxu
+  compacts a fork of the conversation. When the summary is ready, at the end of the next such call,
+  the run hands over to it: it continues from the summary, told the call's result and anything
+  else since the fork, without a pause. It only hands over when no other result is pending.
+- **Between turns** (the interface): after a turn past `background_at`, a fork is summarized while
+  you read and type; the panel shows `compact summarizing…`.
+- **Nothing is wasted.** A summary is never thrown away because the conversation moved on: if you
+  send messages before it is ready, the next message resumes the summary and is told what happened
+  since (those turns, or the end of the run it was made during). Only one summary is made at a
+  time, and only when the conversation itself is at least a tenth of the window (a summary can't
+  shrink the system prompt and tools, so it would only repeat).
+- **`yxu run -c`** (`--continue`) continues the repo's last conversation (`.yxu/conversation.json`).
+  After a `-c` run past `background_at`, a detached process summarizes it, so your shell is not
+  held; the next `yxu run -c` continues from the summary. (A one-off `yxu run` isn't summarized
+  afterwards: that summary would usually go unused.)
+
+Claude Code's own auto-compaction stays as the fallback. Measured with Haiku: between turns, a
+31k-token conversation summarized to 839 tokens in about 8 seconds with the input free; during a
+`yxu run`, a 30k → 1k hand-over while a subagent worked, after which the run (and a later
+`yxu run -c`) still knew the task ids and facts from before.
 
 The panel shows a context gauge (`▰▰▱▱▱▱▱▱ 20% 40k/200k`, amber past `warn_at`), the
 compaction mode, and what was added. Automatic compactions appear in the conversation with

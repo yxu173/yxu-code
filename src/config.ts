@@ -232,8 +232,19 @@ const CompactSchema = z
     instructions: z.string().optional(),
     /** Warn in the interface when context use passes this fraction of the window. */
     warn_at: z.number().min(0.1).max(1).default(0.8),
+    /** Compact between turns, in the background, so the orchestrator never stops mid-run to do it. */
+    background: z
+      .boolean()
+      .default(true)
+      .describe("Interface: after a turn, compact a copy of the conversation in the background; you keep working, and the summary takes over when it is ready"),
+    background_at: z
+      .number()
+      .min(0.1)
+      .max(0.95)
+      .default(0.6)
+      .describe("Start background compaction when context use passes this fraction of the window (before Claude Code's own auto-compaction, which pauses the run)"),
   })
-  .default({ auto: true, window: "auto", warn_at: 0.8 });
+  .default({ auto: true, window: "auto", warn_at: 0.8, background: true, background_at: 0.6 });
 
 export const CONFIG_VERSION = 1;
 

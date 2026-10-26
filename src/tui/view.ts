@@ -380,8 +380,12 @@ export function panelRows(state: State, w: number, h: number, ctx: ViewContext):
   ctxRows.push(
     kv(
       "compact",
-      c.compact.auto ? `auto · ${c.compact.window === "auto" ? "model window" : formatTokens(c.compact.window)}` : "off",
-      { fg: c.compact.auto ? "dim" : "amber" },
+      state.compactingInBackground
+        ? "summarizing…"
+        : c.compact.auto
+          ? `auto${c.compact.background ? " · background" : ""} · ${c.compact.window === "auto" ? "model window" : formatTokens(c.compact.window)}`
+          : "off",
+      { fg: state.compactingInBackground ? "violet" : c.compact.auto ? "dim" : "amber" },
     ),
   );
   const extras = [
