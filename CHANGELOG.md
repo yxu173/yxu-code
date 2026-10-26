@@ -3,6 +3,14 @@
 All notable changes are listed here. The project uses [semantic versioning](https://semver.org);
 before 1.0, minor versions may change the config format (with migration notes here).
 
+## Unreleased
+
+### Added
+- The orchestrator can run chores in your own checkout (`run_in_checkout`): git add, commit, push,
+  stash, switching branches, installing dependencies. It asks before each command (showing why),
+  read-only git commands run without asking, and `settings.checkout_commands: ask|allow|off`
+  controls it. "Push everything except tasks/ to main-dev" now just happens, after your yes.
+
 ## 0.1.1 (2026-10-26)
 
 ### Added
