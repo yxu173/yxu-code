@@ -5,7 +5,7 @@ import type { Asker } from "../permissions.ts";
 import { join } from "node:path";
 import { z } from "zod";
 import type { Config, Workflow } from "../config.ts";
-import { buildContextPrompt, compactInstructions, compactSettings, settingSources, type ContextUsage, type IncludedFile } from "../context.ts";
+import { buildContextPrompt, worthCompacting, compactInstructions, compactSettings, settingSources, type ContextUsage, type IncludedFile } from "../context.ts";
 import { Session, TaskOps, type OpsHooks } from "../ops.ts";
 import { newTaskId } from "../runner.ts";
 import { createYxuServer, SERVER_NAME, TOOL_NAMES } from "./tools.ts";
@@ -33,6 +33,11 @@ export interface RunOutcome {
   outputs?: Record<string, string>;
   /** Context-window usage at the end of the run, when Claude Code reported it. */
   context?: ContextUsage;
+  /**
+   * A summary started during the run and not used by it: resolves with the compacted fork.
+   * `tail` is what happened in the run after the fork (see Conversation.adopt).
+   */
+  backgroundSummary?: { done: Promise<CompactResult | undefined>; tail: string };
   /** Files from context.include that were (or could not be) added. */
   contextFiles?: IncludedFile[];
 }
@@ -53,7 +58,8 @@ export interface OrchestratorRender {
 }
 
 export interface CompactInfo {
-  trigger: "auto" | "manual";
+  /** background: yxu compacted a fork while the orchestrator waited, then handed over to it. */
+  trigger: "auto" | "manual" | "background";
   preTokens: number;
   postTokens?: number;
 }
@@ -115,10 +121,16 @@ async function readContextUsage(q: Query): Promise<ContextUsage | undefined> {
   }
 }
 
-export async function drain(q: AsyncIterable<SDKMessage>, render?: DrainRender, signal?: AbortSignal): Promise<QueryResult> {
+export async function drain(
+  q: AsyncIterable<SDKMessage>,
+  render?: DrainRender,
+  signal?: AbortSignal,
+  opts: { onMessage?: (msg: SDKMessage) => void; stopping?: () => boolean } = {},
+): Promise<QueryResult> {
   const out: QueryResult = { ok: false, text: "", costUsd: 0, compactions: [] };
   try {
     for await (const msg of q) {
+      opts.onMessage?.(msg);
       if ("session_id" in msg && typeof msg.session_id === "string") out.sessionId ??= msg.session_id;
       if (msg.type === "system" && msg.subtype === "compact_boundary") {
         const m = msg.compact_metadata;
@@ -147,7 +159,8 @@ export async function drain(q: AsyncIterable<SDKMessage>, render?: DrainRender, 
       }
     }
   } catch (e) {
-    if (!signal?.aborted) throw e;
+    // An interrupt we asked for (a hand-over) ends the stream with an error result.
+    if (!signal?.aborted && !opts.stopping?.()) throw e;
   }
   if (signal?.aborted) {
     out.ok = false;
@@ -208,6 +221,8 @@ export async function runOrchestrator(opts: {
   session?: Session;
   /** Continue an earlier orchestrator conversation (RunOutcome.sdkSessionId). */
   resume?: string;
+  /** Text before the goal (what happened since a summary that `resume` points at). */
+  preamble?: string;
 }): Promise<RunOutcome> {
   const { cfg, workflow, root, render } = opts;
   if ((cfg.orchestrator.provider ?? "claude") !== "claude") {
@@ -224,19 +239,37 @@ export async function runOrchestrator(opts: {
   });
 
   const extra = buildContextPrompt(cfg, root);
-  const q = query({
-    prompt: opts.goal,
-    options: {
-      ...baseOptions(cfg, root, opts.abort),
-      maxBudgetUsd: cfg.orchestrator.max_budget_usd,
-      allowedTools: [...READ_ONLY_TOOLS, ...TOOL_NAMES],
-      mcpServers: { [SERVER_NAME]: createYxuServer(ops) },
-      systemPrompt: { type: "preset", preset: "claude_code", append: `${orchestratorPrompt(workflow, root)}\n\n${extra.text}` },
-      resume: opts.resume,
-      includePartialMessages: Boolean(render.textDelta),
-    },
-  });
-  const r = await drain(q, render, opts.abort.signal);
+  const mid = new MidRunCompactor(cfg, root, opts.abort.signal);
+  let prompt = `${opts.preamble ?? ""}${opts.goal}`;
+  let resume = opts.resume;
+  let spent = 0;
+  let r: QueryResult;
+  // One query, or several when a background summary takes over mid-run (see MidRunCompactor).
+  for (;;) {
+    const budget = cfg.orchestrator.max_budget_usd;
+    const q = query({
+      prompt,
+      options: {
+        ...baseOptions(cfg, root, opts.abort),
+        maxBudgetUsd: budget === undefined ? undefined : Math.max(0.01, budget - spent - mid.costUsd),
+        allowedTools: [...READ_ONLY_TOOLS, ...TOOL_NAMES],
+        mcpServers: { [SERVER_NAME]: createYxuServer(ops, mid) },
+        systemPrompt: { type: "preset", preset: "claude_code", append: `${orchestratorPrompt(workflow, root)}\n\n${extra.text}` },
+        resume,
+        includePartialMessages: Boolean(render.textDelta),
+      },
+    });
+    mid.attach(q);
+    r = await drain(q, render, opts.abort.signal, { onMessage: (m) => mid.observe(m), stopping: () => Boolean(mid.handoff) });
+    spent += r.costUsd;
+    const h = mid.handoff;
+    if (!h || opts.abort.signal.aborted) break;
+    render.compacted?.(h.compaction);
+    prompt = h.prompt;
+    resume = h.sessionId;
+    mid.reset();
+  }
+  r.costUsd = spent + mid.costUsd;
 
   session.save(sessionPath(root, runId), {
     runId,
@@ -259,13 +292,139 @@ export async function runOrchestrator(opts: {
     cancelled: r.cancelled,
     context: r.context,
     contextFiles: extra.files,
+    backgroundSummary: opts.abort.signal.aborted ? (mid.cancel(), undefined) : mid.leftover(),
   };
+}
+
+/**
+ * Compaction during a run, without pausing it. Claude Code compacts when the window fills, and
+ * the orchestrator stops until that is done. Instead, while the orchestrator waits on a yxu tool
+ * (a subagent usually takes minutes) and the window is past compact.background_at, this compacts
+ * a fork of the conversation in the background and records what happens after the fork. When the
+ * summary is ready, at the end of the next yxu tool call, it hands over: the current query is
+ * interrupted, and the run continues in the compacted fork, told the tool's result and anything
+ * else since the fork. Hand-over only happens when the orchestrator's last message made exactly
+ * that one call, so no result is lost. A summary not used by the end of the run is handed to the
+ * caller (RunOutcome.backgroundSummary) for the next turn.
+ */
+export class MidRunCompactor {
+  private q?: Query;
+  private sessionId?: string;
+  private job?: { abort: AbortController; done: Promise<CompactResult | undefined>; result?: CompactResult; settled: boolean };
+  private since: string[] = [];
+  /** The orchestrator's latest message called exactly one tool, a yxu one. */
+  private singleYxuCall = false;
+  handoff?: { sessionId: string; prompt: string; compaction: CompactInfo };
+  /** What background summaries cost (part of the run's orchestrator cost). */
+  costUsd = 0;
+
+  constructor(
+    private cfg: Config,
+    private root: string,
+    private signal: AbortSignal,
+  ) {}
+
+  attach(q: Query) {
+    this.q = q;
+  }
+
+  /** Every message of the stream: session id, the last call, and what happens after a fork. */
+  observe(msg: SDKMessage) {
+    if ("session_id" in msg && typeof msg.session_id === "string") this.sessionId = msg.session_id;
+    if (msg.type === "assistant" && msg.parent_tool_use_id === null) {
+      const calls = msg.message.content.filter((b) => b.type === "tool_use");
+      this.singleYxuCall = calls.length === 1 && calls[0]!.type === "tool_use" && calls[0]!.name.startsWith(`mcp__${SERVER_NAME}__`);
+      if (!this.job) return;
+      for (const b of msg.message.content) {
+        if (b.type === "text" && b.text.trim()) this.since.push(`You wrote: ${clipText(b.text, 3000)}`);
+        if (b.type === "tool_use") this.since.push(`You called ${b.name.replace(`mcp__${SERVER_NAME}__`, "")}(${clipText(JSON.stringify(b.input ?? {}), 1500)})`);
+      }
+    }
+    if (this.job && msg.type === "user" && msg.parent_tool_use_id === null && Array.isArray(msg.message.content)) {
+      for (const b of msg.message.content as { type: string; content?: unknown }[]) {
+        if (b.type === "tool_result") this.since.push(`It returned: ${clipText(toolResultText(b.content), 3000)}`);
+      }
+    }
+  }
+
+  /** A long yxu tool started: if the window is filling, start summarizing a fork. Never blocks the tool. */
+  toolStart() {
+    const k = this.cfg.compact;
+    if (!k.auto || !k.background || this.job || !this.q || !this.sessionId || this.signal.aborted) return;
+    const q = this.q;
+    const from = this.sessionId;
+    void readContextUsage(q).then((u) => {
+      if (!worthCompacting(u, k) || this.job || this.q !== q || this.signal.aborted) return;
+      const abort = new AbortController();
+      const stop = () => abort.abort();
+      this.signal.addEventListener("abort", stop, { once: true });
+      this.since = [];
+      const job: NonNullable<MidRunCompactor["job"]> = { abort, settled: false, done: Promise.resolve(undefined) };
+      job.done = compactConversation({ cfg: this.cfg, root: this.root, sessionId: from, abort, fork: true })
+        .catch((e: Error) => ({ ok: false, error: e.message, costUsd: 0 }) as CompactResult)
+        .then((res) => {
+          this.costUsd += res.costUsd;
+          job.result = res;
+          job.settled = true;
+          this.signal.removeEventListener("abort", stop);
+          return res.ok && res.sessionId ? res : undefined;
+        });
+      this.job = job;
+    });
+  }
+
+  /** A yxu tool finished with `text`: hand over now if the summary is ready. */
+  toolEnd(tool: string, text: string) {
+    const j = this.job;
+    if (!j?.settled || this.handoff || !this.q || !this.singleYxuCall || this.signal.aborted) return;
+    const res = j.result;
+    if (!res?.ok || !res.sessionId || !res.compaction) {
+      this.job = undefined; // failed: Claude Code's own compaction remains the fallback
+      return;
+    }
+    const since = this.since.length ? `Before it returned:\n${this.since.join("\n")}\n\n` : "";
+    this.handoff = {
+      sessionId: res.sessionId,
+      compaction: { ...res.compaction, trigger: "background" },
+      prompt: `[yxu] This conversation was summarized in the background while you waited on a ${tool} call, and continues here. ${since}Your ${tool} call returned:\n${text}\n\n[yxu] Continue the task from here.`,
+    };
+    void this.q.interrupt().catch(() => {});
+  }
+
+  /** After a hand-over: the next query starts clean. */
+  reset() {
+    this.handoff = undefined;
+    this.job = undefined;
+    this.since = [];
+    this.singleYxuCall = false;
+  }
+
+  cancel() {
+    this.job?.abort.abort();
+    this.job = undefined;
+  }
+
+  /** A summary the run started but didn't use: for the next turn, with what happened after the fork. */
+  leftover(): RunOutcome["backgroundSummary"] {
+    if (!this.job) return undefined;
+    return { done: this.job.done, tail: this.since.join("\n") };
+  }
+}
+
+const clipText = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}… (${s.length - n} more characters)` : s);
+
+function toolResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.map((c) => (c && typeof c === "object" && "text" in c ? String((c as { text: unknown }).text) : "")).join("\n");
+  return "";
 }
 
 /**
  * Summarize an orchestrator conversation now (the same as /compact in Claude Code), so later
  * messages keep their memory in fewer tokens.
  */
+export type CompactResult = { ok: boolean; error?: string; compaction?: CompactInfo; context?: ContextUsage; costUsd: number; sessionId?: string };
+
 export async function compactConversation(opts: {
   cfg: Config;
   root: string;
@@ -276,7 +435,7 @@ export async function compactConversation(opts: {
   render?: DrainRender;
   /** Compact a copy (a forked session) and leave the original as it is: for background compaction. */
   fork?: boolean;
-}): Promise<{ ok: boolean; error?: string; compaction?: CompactInfo; context?: ContextUsage; costUsd: number; sessionId?: string }> {
+}): Promise<CompactResult> {
   const q = query({
     prompt: `/compact ${compactInstructions(opts.cfg, opts.instructions)}`,
     options: { ...baseOptions(opts.cfg, opts.root, opts.abort), resume: opts.sessionId, ...(opts.fork ? { forkSession: true } : {}) },

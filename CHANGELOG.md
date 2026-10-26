@@ -15,9 +15,13 @@ before 1.0, minor versions may change the config format (with migration notes he
   (`permission: plan`) get a preamble that asks for a report instead of changes.
 - `/agent new <name> <cli> [model]`, `/agent remove <name>`, and `/agent <name> cli|role|instructions …`
   in the interface: change an agent's provider, model and role, or add your own; `/save` keeps them.
-- Background compaction in the interface (`compact.background`, `compact.background_at`, default on at
-  60%): after a turn, a forked copy of the conversation is summarized while you keep working, so
-  Claude Code's own auto-compaction doesn't pause the orchestrator mid-run. `/compact background on|off|<n%>`.
+- Background compaction (`compact.background`, `compact.background_at`, default on at 60%), so
+  Claude Code's own auto-compaction doesn't pause the orchestrator: during a run, a fork is
+  summarized while subagents work and the run hands over to it; between turns, the interface
+  summarizes while you keep working. Summaries are never thrown away: turns that ran meanwhile are
+  passed on with them. `/compact background on|off|<n%>`.
+- `yxu run -c` (`--continue`) continues the repo's last conversation; after a run, it is summarized
+  in a detached process for the next one.
 - A friendly message when yxu runs outside a git repository.
 
 ### Changed

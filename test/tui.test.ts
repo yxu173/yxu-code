@@ -458,6 +458,7 @@ import { mkdtempSync as mkd, readFileSync as rd, rmSync as rmd, writeFileSync as
 import { tmpdir as tmp } from "node:os";
 import { join as pj } from "node:path";
 import type { ContextUsage } from "../src/context.ts";
+import type { CompactResult } from "../src/orchestrator/run.ts";
 
 function usage(pct: number, auto = true): ContextUsage {
   return { tokens: pct * 2000, max: 200_000, percentage: pct, autoCompact: auto, threshold: 167_000, categories: [{ name: "Messages", tokens: pct * 1500, kind: "used" }] };
@@ -481,6 +482,8 @@ function contextEngine(opts: { usage?: ContextUsage } = {}) {
   };
   return { engine, runs, compactions };
 }
+
+const notices = (app: App) => app.store.state.entries.flatMap((e) => (e.kind === "notice" ? [e.text] : []));
 
 function appAt(root: string, engine: Engine) {
   let frame: Frame = { rows: [] };
@@ -562,19 +565,19 @@ describe("context & compaction controls", () => {
     teardown();
   });
 
-  test("background compaction: summarizes a fork after a turn without blocking, and a new turn wins", async () => {
+  test("background compaction: summarizes a fork without blocking, and a summary is never wasted", async () => {
     setup();
-    const runs: { resume?: string }[] = [];
+    const runs: { resume?: string; preamble?: string }[] = [];
     const forks: { sessionId: string; fork?: boolean; abort: AbortController; finish: () => void }[] = [];
     const engine: Engine = {
-      async run({ session, resume }) {
-        runs.push({ resume });
-        return { runId: "r", ok: true, finalText: "ok", costUsd: 0, session, sdkSessionId: resume ?? "sess-1", context: usage(70) } as RunOutcome;
+      async run({ session, resume, preamble }) {
+        runs.push({ resume, preamble });
+        return { runId: "r", ok: true, finalText: `answer ${runs.length}`, costUsd: 0, session, sdkSessionId: resume ?? "sess-1", context: usage(70) } as RunOutcome;
       },
       compact: ({ sessionId, fork, abort }) =>
         new Promise((resolve) => {
           const compaction = { trigger: "manual" as const, preTokens: 140_000, postTokens: 20_000 };
-          const finish = () => resolve(abort.signal.aborted ? { ok: false, error: "cancelled", costUsd: 0 } : { ok: true, compaction, context: usage(10), costUsd: 0.01, sessionId: `${sessionId}-compacted` });
+          const finish = () => resolve(abort.signal.aborted ? { ok: false, error: "cancelled", costUsd: 0 } : { ok: true, compaction, context: usage(10), costUsd: 0.01, sessionId: `${sessionId}+c` });
           abort.signal.addEventListener("abort", finish);
           forks.push({ sessionId, fork, abort, finish });
         }),
@@ -582,40 +585,48 @@ describe("context & compaction controls", () => {
     const { app, screen } = appAt(root, engine);
     app.input("first\r");
     await app.idle();
-    // 70% ≥ 60%: a fork is being compacted, and the interface is free.
+    // 70% ≥ 60%: a fork is being summarized, and the interface is free.
     expect(forks).toHaveLength(1);
     expect(forks[0]).toMatchObject({ sessionId: "sess-1", fork: true });
     expect(app.store.state.status).not.toBe("working");
     expect(screen()).toMatch(/compact\s+summarizing…/);
 
-    // A new message doesn't wait: it continues the full conversation and cancels the summary.
+    // A new message doesn't wait and doesn't cancel the summary; no second summary starts meanwhile.
     app.input("second\r");
     await app.idle();
-    expect(runs[1]!.resume).toBe("sess-1");
-    expect(forks[0]!.abort.signal.aborted).toBe(true);
-    await Bun.sleep(1);
-    expect(screen()).not.toContain("compacted in the background"); // the cancelled fork changed nothing
+    expect(runs[1]).toEqual({ resume: "sess-1", preamble: undefined });
+    expect(forks[0]!.abort.signal.aborted).toBe(false);
+    expect(forks).toHaveLength(1);
 
-    // After that turn, a new fork; this time nothing interrupts it, so the summary takes over.
-    expect(forks).toHaveLength(2);
-    forks[1]!.finish();
+    // The summary lands; the next turn resumes it and is told about the turn it missed.
+    forks[0]!.finish();
     await app.backgroundCompaction();
-    let s = screen();
-    expect(s).toContain("Conversation compacted in the background: 140k → 20k tokens");
-    expect(s).toMatch(/window\s+▰▱▱▱▱▱▱▱ 10%/);
+    expect(notices(app).at(-1)).toBe("Conversation summarized in the background: 140k → 20k tokens. The next message continues from the summary, with what happened since (1 turn).");
     app.input("third\r");
     await app.idle();
-    expect(runs[2]!.resume).toBe("sess-1-compacted");
+    expect(runs[2]!.resume).toBe("sess-1+c");
+    expect(runs[2]!.preamble).toContain("The user asked: second\nYou answered: answer 2");
+    expect(runs[2]!.preamble).not.toContain("first");
+    expect(app.conversation.summary).toBeUndefined(); // spent
 
-    // Off: no more background work; the threshold is adjustable.
-    forks.at(-1)!.finish();
-    await Bun.sleep(1);
-    app.input("/compact background off\r");
+    // Still at 70% afterwards: a new summary of the continued conversation; idle, so it applies as is.
+    expect(forks).toHaveLength(2);
+    expect(forks[1]!.sessionId).toBe("sess-1+c");
+    forks[1]!.finish();
+    await app.backgroundCompaction();
+    expect(screen()).toMatch(/window\s+▰▱▱▱▱▱▱▱ 10%/);
     app.input("fourth\r");
     await app.idle();
+    expect(runs[3]).toEqual({ resume: "sess-1+c+c", preamble: undefined });
+
+    // /new drops a summary in flight; off stops new ones; the threshold is adjustable.
+    app.input("/new\r");
+    expect(forks.at(-1)!.abort.signal.aborted).toBe(true);
+    app.input("/compact background off\r");
     const count = forks.length;
     app.input("fifth\r");
     await app.idle();
+    expect(runs[4]!.resume).toBeUndefined();
     expect(forks.length).toBe(count);
     app.input("/compact background 99%\r");
     expect(screen()).toContain("usage: /compact background on|off|<10–95%>");
@@ -623,6 +634,39 @@ describe("context & compaction controls", () => {
     app.input("/compact background on\r");
     expect(app.cfg.compact).toMatchObject({ background: true, background_at: 0.8 });
     expect(forks.length).toBe(count); // 70% < 80%: nothing to do
+    app.dispose();
+    teardown();
+  });
+
+  test("a summary left over from a run serves the next turn, with the rest of that run", async () => {
+    setup();
+    const runs: { resume?: string; preamble?: string }[] = [];
+    let finishLeftover!: () => void;
+    const engine: Engine = {
+      async run({ session, resume, preamble }) {
+        runs.push({ resume, preamble });
+        const backgroundSummary =
+          runs.length === 1
+            ? {
+                tail: "You called delegate(...)\nIt returned: task_id: t1",
+                done: new Promise<CompactResult | undefined>((r) => (finishLeftover = () => r({ ok: true, costUsd: 0.02, sessionId: "fork-1", compaction: { trigger: "manual", preTokens: 90_000, postTokens: 9_000 } }))),
+              }
+            : undefined;
+        return { runId: "r", ok: true, finalText: "done", costUsd: 0, session, sdkSessionId: "sess-1", context: usage(30), backgroundSummary } as RunOutcome;
+      },
+      compact: async () => ({ ok: false, costUsd: 0 }),
+    };
+    const { app, screen } = appAt(root, engine);
+    app.input("build it\r");
+    await app.idle();
+    finishLeftover();
+    await app.backgroundCompaction();
+    expect(notices(app).at(-1)).toContain("with what happened since (the end of the run)");
+    app.input("next\r");
+    await app.idle();
+    expect(runs[1]!.resume).toBe("fork-1");
+    expect(runs[1]!.preamble).toContain("The run that was in progress when the summary was made went on:\nYou called delegate(...)");
+    expect(runs[1]!.preamble).not.toContain("build it"); // that turn is in the summary and the tail
     app.dispose();
     teardown();
   });

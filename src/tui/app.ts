@@ -13,6 +13,7 @@ import { getWorkflow, orchestratorLabel, type Config, type Workflow } from "../c
 import { branchFor, excludeYxuDir, tryGit } from "../git.ts";
 import { Session } from "../ops.ts";
 import { runPipeline } from "../orchestrator/pipeline.ts";
+import { Conversation } from "../conversation.ts";
 import { compactConversation, runOrchestrator, type OrchestratorRender, type RunOutcome } from "../orchestrator/run.ts";
 import { saveConfigPatch } from "../config-edit.ts";
 import { display, FILE_LAYERS, LAYERS, loadLayers, originOf, type FileLayer } from "../config-layers.ts";
@@ -20,7 +21,7 @@ import { explainRows } from "../config-explain.ts";
 import { allCommands, COMMANDS, findCommand, onOff, paletteFor, parseCommandLine } from "./commands.ts";
 import { commandUsage, expandCommand, loadUserCommands, type UserCommand } from "../user-commands.ts";
 import { runVerify } from "../verify.ts";
-import { buildContextPrompt, formatTokens, parseTokensArg, resolveInclude, type ContextUsage } from "../context.ts";
+import { buildContextPrompt, worthCompacting, formatTokens, parseTokensArg, resolveInclude, type ContextUsage } from "../context.ts";
 import { killAllSubagents } from "../runner.ts";
 import type { TaskResult } from "../types.ts";
 import { Editor } from "./editor.ts";
@@ -45,6 +46,8 @@ export interface Engine {
     abort: AbortController;
     session: Session;
     resume?: string;
+    /** Text before the goal: what happened since a background summary that `resume` points at. */
+    preamble?: string;
     /** The live config (context/compact settings can change during a session). */
     cfg: Config;
     /** Pipeline inputs (from /run or a command). */
@@ -80,11 +83,11 @@ export function gitBackend(root: string, cfg: () => Config): TaskBackend {
 
 export function productionEngine(root: string): Engine {
   return {
-    run: ({ goal, workflow, render, abort, session, resume, cfg, inputs, gate }) =>
+    run: ({ goal, workflow, render, abort, session, resume, preamble, cfg, inputs, gate }) =>
       withRunHooks(cfg, root, { goal, workflow: workflow.name, session, signal: abort.signal }, () =>
         workflow.mode === "pipeline"
           ? runPipeline({ goal, cfg, workflow, root, render, abort, session, inputs, gate })
-          : runOrchestrator({ goal, cfg, workflow, root, render, abort, session, resume }),
+          : runOrchestrator({ goal, cfg, workflow, root, render, abort, session, resume, preamble }),
       ),
     compact: ({ cfg, sessionId, instructions, abort, render, fork }) => compactConversation({ cfg, root, sessionId, instructions, abort, render, fork }),
   };
@@ -120,9 +123,13 @@ export class App {
   private parser = new KeyParser();
   private workflow: Workflow & { name: string };
   private session = new Session();
-  private sdkSessionId?: string;
-  /** Background compaction in progress: a fork of `from`, started after turn `turn`. */
-  private bgCompact?: { abort: AbortController; from: string; turn: number; done: Promise<void> };
+  /** The remembered orchestrator conversation, and summaries made of it in the background. */
+  private conv = new Conversation();
+  private get sdkSessionId(): string | undefined {
+    return this.conv.sessionId;
+  }
+  /** Background compaction in progress (between turns). */
+  private bgCompact?: { abort: AbortController; done: Promise<void> };
   private abort?: AbortController;
   private streaming?: Extract<Entry, { kind: "assistant" }>;
   private openRead?: Activity;
@@ -700,7 +707,7 @@ export class App {
   /** Forget the remembered orchestrator conversation (next message starts fresh). */
   resetConversation() {
     this.stopBackgroundCompaction();
-    this.sdkSessionId = undefined;
+    this.conv.reset();
     this.store.set({ remembering: false });
   }
 
@@ -939,7 +946,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     const s = this.store;
     if (s.state.status === "working" || s.state.status === "cancelling") return this.flash("an operation is running — compact after it finishes", 2500);
     if (!this.o.engine.compact) return void s.add({ kind: "error", message: "this engine cannot compact conversations" });
-    if (this.bgCompact) return this.flash("already compacting in the background — the summary takes over when it is ready", 3000);
+    if (this.bgCompact) return this.flash("already compacting in the background — the next message continues from the summary", 3000);
     if (!this.sdkSessionId) {
       return void s.add({
         kind: "notice",
@@ -964,6 +971,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     if (r?.context) s.set({ usage: r.context });
     if (r) s.state.cost.orchestrator += r.costUsd;
     if (r?.ok && r.compaction) {
+      this.conv.compactedInPlace();
       const c = r.compaction;
       s.update(act, { state: "ok", meta: `${formatTokens(c.preTokens)}${c.postTokens !== undefined ? ` → ${formatTokens(c.postTokens)}` : ""} tokens` });
       this.settle();
@@ -976,56 +984,59 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
 
   /**
    * After a turn, when the conversation passes compact.background_at, compact a fork of it in the
-   * background. The user keeps working; the summary takes over only if no turn ran meanwhile
-   * (a new turn cancels it, and the next turn's end tries again). Claude Code's own
-   * auto-compaction, which pauses a run, stays as the fallback.
+   * background while the user keeps working. The summary is never thrown away: if turns run
+   * before it is ready, the next turn resumes the summary and is told about them (Conversation).
    */
   maybeCompactInBackground() {
     const k = this.cfg.compact;
     const u = this.store.state.usage;
-    const from = this.sdkSessionId;
-    if (!this.o.engine.compact || !from || this.bgCompact || this.abort || !this.cfg.context.memory || !k.auto || !k.background) return;
-    if (!u || u.max <= 0 || u.percentage / 100 < k.background_at) return;
+    const from = this.conv.sessionId;
+    if (!this.o.engine.compact || !from || this.bgCompact || this.conv.summary || this.abort || !this.cfg.context.memory || !k.auto || !k.background) return;
+    if (!worthCompacting(u, k)) return;
     const abort = new AbortController();
-    const turn = this.store.state.turn;
     const quiet: OrchestratorRender = { assistantText: () => {}, toolCall: () => {}, hooks: {} };
-    const job = { abort, from, turn, done: Promise.resolve() };
+    const afterTurn = this.conv.turn;
+    this.adoptSummary(
+      this.o.engine.compact({ cfg: this.cfg, sessionId: from, abort, render: quiet, fork: true }).then(
+        (r) => (r.ok && r.sessionId ? r : (this.backgroundFailed(r.error, abort), undefined)),
+        (e: Error) => (this.backgroundFailed(e.message, abort), undefined),
+      ),
+      afterTurn,
+      undefined,
+      abort,
+    );
+  }
+
+  private backgroundFailed(error: string | undefined, abort: AbortController) {
+    if (abort.signal.aborted) return;
+    this.store.add({ kind: "notice", tone: "attention", text: `Background compaction failed: ${error ?? "unknown error"}. Nothing changed; Claude Code still compacts when the window fills, or /compact now.` });
+  }
+
+  /** A summary on its way (between turns, or left over from a run): use it from the next turn on. */
+  private adoptSummary(done: Promise<CompactResult | undefined>, afterTurn: number, tail: string | undefined, abort?: AbortController) {
+    const convId = this.conv.state.id;
+    const job = { abort: abort ?? new AbortController(), done: Promise.resolve() };
     this.bgCompact = job;
     this.store.set({ compactingInBackground: true });
-    job.done = (async () => {
-      let r: CompactResult | undefined;
-      let err: string | undefined;
-      try {
-        r = await this.o.engine.compact!({ cfg: this.cfg, sessionId: from, abort, render: quiet, fork: true });
-      } catch (e) {
-        err = (e as Error).message;
-      }
+    job.done = done.then((r) => {
+      if (r) this.store.state.cost.orchestrator += r.costUsd;
       if (this.bgCompact === job) {
         this.bgCompact = undefined;
         this.store.set({ compactingInBackground: false });
       }
-      if (r) this.store.state.cost.orchestrator += r.costUsd;
-      if (abort.signal.aborted) return;
-      // Only if the conversation is still where the fork was taken.
-      if (this.sdkSessionId !== from || this.store.state.turn !== turn) return;
-      if (r?.ok && r.compaction && r.sessionId) {
-        this.sdkSessionId = r.sessionId;
-        if (r.context) this.store.set({ usage: r.context });
-        this.warned = 0;
-        const c = r.compaction;
-        this.store.add({
-          kind: "notice",
-          tone: "memory",
-          text: `Conversation compacted in the background: ${formatTokens(c.preTokens)}${c.postTokens !== undefined ? ` → ${formatTokens(c.postTokens)}` : ""} tokens. Memory continues from the summary.`,
-        });
-      } else {
-        this.store.add({
-          kind: "notice",
-          tone: "attention",
-          text: `Background compaction failed: ${err ?? r?.error ?? "unknown error"}. Nothing changed; Claude Code still compacts when the window fills, or /compact now.`,
-        });
-      }
-    })();
+      if (job.abort.signal.aborted || !r?.sessionId || !r.compaction) return;
+      const c = r.compaction;
+      if (!this.conv.adopt(convId, { sessionId: r.sessionId, afterTurn, tail, preTokens: c.preTokens, postTokens: c.postTokens })) return;
+      const since = this.conv.turnsSince(this.conv.summary!).length;
+      if (!since && !tail && r.context) this.store.set({ usage: r.context });
+      this.warned = 0;
+      const tokens = `${formatTokens(c.preTokens)}${c.postTokens !== undefined ? ` → ${formatTokens(c.postTokens)}` : ""} tokens`;
+      this.store.add({
+        kind: "notice",
+        tone: "memory",
+        text: `Conversation summarized in the background: ${tokens}. ${since || tail ? `The next message continues from the summary, with what happened since (${since ? `${since} turn${since === 1 ? "" : "s"}` : "the end of the run"}).` : "The next message continues from the summary."}`,
+      });
+    });
   }
 
   /** Cancel a background compaction (a new turn, /new, exit). */
@@ -1039,6 +1050,11 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
   /** Wait for a background compaction (tests). */
   async backgroundCompaction(): Promise<void> {
     await this.bgCompact?.done;
+  }
+
+  /** The conversation state (tests and /context). */
+  get conversation(): Conversation {
+    return this.conv;
   }
 
   private warned = 0;
@@ -1087,7 +1103,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
       "",
       "**Compaction**",
       `- auto: ${k.auto ? "on" : "off"} · window: ${k.window === "auto" ? "model default" : formatTokens(k.window)} · warn at ${Math.round(k.warn_at * 100)}%`,
-      `- background: ${k.auto && k.background ? `on — from ${Math.round(k.background_at * 100)}%, between turns, without blocking${this.bgCompact ? " (summarizing now)" : ""}` : "off"}`,
+      `- background: ${k.auto && k.background ? `on — from ${Math.round(k.background_at * 100)}%, between turns and while the orchestrator waits on subagents, without blocking${this.bgCompact ? " (summarizing now)" : this.conv.summary ? " (a summary is ready for the next message)" : ""}` : "off"}`,
       `- instructions: ${k.instructions?.trim() ? k.instructions.trim() : "default (task ids, decisions, changed files)"}`,
       "",
       "Change with `/context memory|instructions on|off`, `/context add|drop <file>`, `/context notes <text>`, `/compact auto on|off`, `/compact background on|off|<60%>`, `/compact window <200k|auto>`, `/compact instructions <text>`, `/compact` to summarize now, `/context save` to keep.",
@@ -1312,8 +1328,6 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
 
   private async startRun(goal: string, run?: { workflow?: Workflow & { name: string }; inputs?: Record<string, string> }) {
     const s = this.store;
-    // The new turn continues the full conversation; a summary of the old one would miss it.
-    this.stopBackgroundCompaction();
     s.set({ turn: s.state.turn + 1 });
     const time = new Date();
     s.add({
@@ -1322,6 +1336,8 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     });
     s.add({ kind: "user", text: goal, time });
     const wf = run?.workflow ?? this.workflow;
+    const remember = this.cfg.context.memory && wf.mode === "auto";
+    const next = remember ? this.conv.next() : { usesSummary: false as const };
     s.setStatus("working", wf.mode === "pipeline" ? `pipeline ${wf.name}` : "orchestrator planning");
     this.startTicker();
     this.abort = new AbortController();
@@ -1338,7 +1354,8 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
         render: this.renderAdapter(),
         abort: this.abort,
         session: this.session,
-        resume: this.cfg.context.memory ? this.sdkSessionId : undefined,
+        resume: next.resume,
+        preamble: next.preamble,
         cfg: this.cfg,
         inputs: run?.inputs,
         gate: (message, stepId) => this.askGate(message, stepId),
@@ -1358,9 +1375,11 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
 
     if (outcome) {
       s.state.cost.orchestrator += outcome.costUsd;
-      if (outcome.sdkSessionId && this.workflow.mode === "auto" && this.cfg.context.memory) {
-        this.sdkSessionId = outcome.sdkSessionId;
-        s.set({ remembering: true });
+      if (remember) {
+        this.conv.finish({ goal, finalText: outcome.finalText, sessionId: outcome.sdkSessionId, usedSummary: next.usesSummary });
+        if (outcome.sdkSessionId) s.set({ remembering: true });
+        // A summary the run started but didn't get to use serves the next turn.
+        if (outcome.backgroundSummary && !this.bgCompact && !this.conv.summary) this.adoptSummary(outcome.backgroundSummary.done, this.conv.turn, outcome.backgroundSummary.tail || undefined);
       }
       if (outcome.context) s.set({ usage: outcome.context });
       for (const f of outcome.contextFiles ?? []) {
@@ -1498,7 +1517,14 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
       compacted: (info) => {
         closeRead();
         const after = info.postTokens !== undefined ? ` → ${formatTokens(info.postTokens)}` : "";
-        s.add({ kind: "notice", tone: "memory", text: `Conversation compacted (${info.trigger}): ${formatTokens(info.preTokens)}${after} tokens. Memory continues from the summary.` });
+        s.add({
+          kind: "notice",
+          tone: "memory",
+          text:
+            info.trigger === "background"
+              ? `Conversation summarized in the background while subagents worked: ${formatTokens(info.preTokens)}${after} tokens. The run continues from the summary, without a pause.`
+              : `Conversation compacted (${info.trigger}): ${formatTokens(info.preTokens)}${after} tokens. Memory continues from the summary.`,
+        });
       },
       textStart: () => {
         closeRead();
