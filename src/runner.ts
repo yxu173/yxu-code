@@ -5,10 +5,10 @@ import { collectChanges, createWorktree, removeWorktree, repoRoot, tryGit, worki
 import { runAcp } from "./acp.ts";
 import { genericCommand, genericParse } from "./adapters/generic.ts";
 import type { Asker } from "./permissions.ts";
-import { killGroup, start } from "./platform.ts";
+import { killGroup, signalGroup, start } from "./platform.ts";
 import { sandboxed } from "./sandbox.ts";
 import { plugins } from "./plugins.ts";
-import type { Adapter, AgentEvent, AgentProfile, CliName, ParsedResult, TaskResult } from "./types.ts";
+import { emptyUsage, type Adapter, type AgentEvent, type AgentProfile, type CliName, type ParsedResult, type TaskResult, type Usage } from "./types.ts";
 
 export interface RunOptions {
   agentName: string;
@@ -65,6 +65,205 @@ export function killAllSubagents(signal: NodeJS.Signals = "SIGTERM") {
 }
 
 process.on("exit", () => killAllSubagents("SIGKILL"));
+
+// ── live control: watch, steer, pause and take over running tasks ───────────
+
+export type LiveState = "running" | "paused" | "steering" | "user";
+
+/** A running task the user can watch and step into (non-ACP agents). */
+export class LiveControl {
+  state: LiveState = "running";
+  events: AgentEvent[] = [];
+  sessionId?: string;
+  tookOver = false;
+  /** Notes for the viewer: "restarted with your message", … */
+  log: string[] = [];
+  readonly startedAt = Date.now();
+  private pid?: number;
+  private stopFor?: { kind: "steer"; message: string } | { kind: "takeover" };
+  private remaining: number;
+  private since = Date.now();
+  private timer?: ReturnType<typeof setTimeout>;
+  private userDone?: () => void;
+
+  constructor(
+    readonly taskId: string,
+    readonly agent: string,
+    readonly model: string | undefined,
+    readonly worktree: string,
+    timeoutMs: number,
+    private onKill: (reason: string) => void,
+  ) {
+    this.remaining = timeoutMs;
+  }
+
+  attach(pid: number) {
+    this.pid = pid;
+    this.state = "running";
+    this.arm();
+    changed(this.taskId);
+  }
+
+  event(e: AgentEvent) {
+    if (e.kind === "start" && e.sessionId) this.sessionId = e.sessionId;
+    this.events.push(e);
+    if (this.events.length > 300) this.events.splice(0, this.events.length - 300);
+    changed(this.taskId);
+  }
+
+  /** The timeout only counts time the agent is actually running. */
+  private arm() {
+    clearTimeout(this.timer);
+    this.since = Date.now();
+    this.timer = setTimeout(() => this.stop("timeout"), Math.max(0, this.remaining));
+  }
+
+  private disarm() {
+    clearTimeout(this.timer);
+    this.remaining -= Date.now() - this.since;
+  }
+
+  private terminate() {
+    if (!this.pid) return;
+    const pid = this.pid;
+    killGroup(pid, "SIGTERM");
+    if (this.state === "paused") signalGroup(pid, "SIGCONT"); // a stopped process can't handle SIGTERM
+    setTimeout(() => killGroup(pid, "SIGKILL"), 5000).unref();
+  }
+
+  /** Timeout or cancel: the task fails. */
+  stop(reason: string) {
+    this.onKill(reason);
+    this.disarm();
+    if (this.state !== "user") this.terminate(); // taken over: the agent has already exited
+    this.userDone?.();
+  }
+
+  /** Send the agent a message: it stops and continues with it. */
+  steer(message: string): string | undefined {
+    if (this.state === "user") return "you have taken this task over; /done hands it back";
+    if (!this.pid || this.stopFor) return "it is not running right now";
+    this.stopFor = { kind: "steer", message };
+    this.log.push(`you: ${message}`);
+    this.state = "steering";
+    this.disarm();
+    this.terminate();
+    changed(this.taskId);
+    return undefined;
+  }
+
+  pause(): string | undefined {
+    if (this.state !== "running" || !this.pid) return `it is ${this.state === "paused" ? "already paused" : "not running"}`;
+    if (!signalGroup(this.pid, "SIGSTOP")) return "pausing isn't supported on this system";
+    this.disarm();
+    this.state = "paused";
+    this.log.push("paused");
+    changed(this.taskId);
+    return undefined;
+  }
+
+  resume(): string | undefined {
+    if (this.state !== "paused" || !this.pid) return "it isn't paused";
+    signalGroup(this.pid, "SIGCONT");
+    this.state = "running";
+    this.log.push("resumed");
+    this.arm();
+    changed(this.taskId);
+    return undefined;
+  }
+
+  /** Stop the agent and let the user finish in the worktree; `/done` hands the result back. */
+  takeOver(): string | undefined {
+    if (this.state === "user") return "you already have it";
+    if (!this.pid || this.stopFor) return "it is not running right now";
+    this.stopFor = { kind: "takeover" };
+    this.tookOver = true;
+    this.log.push("taken over by you");
+    this.disarm();
+    this.terminate();
+    changed(this.taskId);
+    return undefined;
+  }
+
+  done(): string | undefined {
+    if (this.state !== "user" || !this.userDone) return "it isn't taken over";
+    this.log.push("handed back");
+    this.userDone();
+    return undefined;
+  }
+
+  takeStop() {
+    const why = this.stopFor;
+    this.stopFor = undefined;
+    return why;
+  }
+
+  resumed(how: string) {
+    this.log.push(how);
+  }
+
+  untilUserDone(signal?: AbortSignal): Promise<void> {
+    this.state = "user";
+    changed(this.taskId);
+    return new Promise((resolve) => {
+      this.userDone = () => {
+        this.userDone = undefined;
+        resolve();
+      };
+      if (signal?.aborted) this.userDone();
+      signal?.addEventListener("abort", () => this.userDone?.(), { once: true });
+    });
+  }
+
+  end() {
+    clearTimeout(this.timer);
+    live.delete(this.taskId);
+    changed(this.taskId);
+  }
+}
+
+const live = new Map<string, LiveControl>();
+const watchers = new Set<(taskId: string) => void>();
+
+/** Running tasks the user can step into. */
+export const liveTask = (id: string) => live.get(id);
+export const liveTasks = () => [...live.values()];
+
+/** Be told when a live task changes (new events, state). Returns an unsubscribe function. */
+export function onLiveChange(fn: (taskId: string) => void): () => void {
+  watchers.add(fn);
+  return () => watchers.delete(fn);
+}
+
+function changed(taskId: string) {
+  for (const w of watchers) {
+    try {
+      w(taskId);
+    } catch {
+      // a viewer's problem never stops the agent
+    }
+  }
+}
+
+function steerMessage(message: string): string {
+  return `[A message from the user, who is watching you work]\n${message}\n\nContinue the task with this in mind.`;
+}
+
+function restartPrompt(prompt: string, message: string): string {
+  return `${prompt}\n\n---\nYou were already working on this task when the user interrupted you. Your changes so far are in this directory (see \`git status\` and \`git diff\`); keep what is right. The user says:\n${message}\n\nContinue the task with this in mind.`;
+}
+
+function sumUsage(us: Usage[]): Usage {
+  return us.reduce(
+    (a, u) => ({
+      inputTokens: a.inputTokens + u.inputTokens,
+      outputTokens: a.outputTokens + u.outputTokens,
+      cacheReadTokens: a.cacheReadTokens + u.cacheReadTokens,
+      cacheWriteTokens: a.cacheWriteTokens + u.cacheWriteTokens,
+    }),
+    emptyUsage(),
+  );
+}
 
 /** Run one subagent task to completion and return a normalized result. */
 export async function runTask(opts: RunOptions): Promise<TaskResult> {
@@ -123,22 +322,86 @@ export async function runTask(opts: RunOptions): Promise<TaskResult> {
     ({ transcript: stdout, stderr, exitCode } = out);
     parsed = { events: out.events, result: out.result };
   } else {
-    const proc = start(argv, { cwd, detached: true, env });
-    liveGroups.add(proc.pid);
-    const kill = (reason: string) => {
+    const parse = (out: string, err: string, code: number | null) =>
+      profile.cli === "generic" ? genericParse(profile.generic!, out, err, code) : adapter!.parse(out, err, code);
+    const ctl = new LiveControl(taskId, opts.agentName, profile.model, wt?.path ?? cwd, timeoutMs, (reason) => {
       killedReason ??= reason;
-      killGroup(proc.pid, "SIGTERM");
-      setTimeout(() => killGroup(proc.pid, "SIGKILL"), 5000).unref();
-    };
-    const timer = setTimeout(() => kill("timeout"), timeoutMs);
-    const onAbort = () => kill("cancelled");
+    });
+    live.set(taskId, ctl);
+    changed(taskId);
+    const onAbort = () => ctl.stop("cancelled");
     if (opts.signal?.aborted) onAbort();
     opts.signal?.addEventListener("abort", onAbort, { once: true });
-    ({ code: exitCode, stdout, stderr } = await proc.result);
-    liveGroups.delete(proc.pid);
-    clearTimeout(timer);
-    opts.signal?.removeEventListener("abort", onAbort);
-    parsed = profile.cli === "generic" ? genericParse(profile.generic!, stdout, stderr, exitCode) : adapter!.parse(stdout, stderr, exitCode);
+    const segments: { stdout: string; stderr: string; code: number | null }[] = [];
+    let argvNow = argv;
+    try {
+      for (;;) {
+        // Live events, line by line (NDJSON CLIs; whole-output CLIs report at the end).
+        let partial = "";
+        const proc = start(argvNow, {
+          cwd,
+          detached: true,
+          env,
+          onStdout: (chunk) => {
+            if (profile.cli === "generic") return;
+            const lines = (partial + chunk).split("\n");
+            partial = lines.pop() ?? "";
+            for (const line of lines) {
+              if (!line.trim().startsWith("{")) continue;
+              for (const e of adapter!.parse(line, "", null).events) {
+                if (e.kind === "start" && ctl.sessionId) continue; // line-by-line parsing repeats it
+                ctl.event(e);
+                opts.onEvent?.(taskId, e);
+              }
+            }
+          },
+        });
+        liveGroups.add(proc.pid);
+        ctl.attach(proc.pid);
+        const out = await proc.result;
+        liveGroups.delete(proc.pid);
+        segments.push({ stdout: out.stdout, stderr: out.stderr, code: out.code });
+        const why = ctl.takeStop();
+        if (why?.kind === "steer" && !killedReason) {
+          // Continue the CLI's own session when it can; otherwise start again, told what happened.
+          const sessionId = parse(out.stdout, out.stderr, out.code).result.sessionId ?? ctl.sessionId;
+          const resumeArgv = sessionId && adapter?.resume ? adapter.resume({ ...spec, prompt: steerMessage(why.message) }, profile, sessionId) : undefined;
+          argvNow =
+            resumeArgv ??
+            (profile.cli === "generic"
+              ? genericCommand(profile.generic!, { ...spec, prompt: restartPrompt(opts.prompt, why.message) }, profile)
+              : adapter!.command({ ...spec, prompt: restartPrompt(opts.prompt, why.message) }, profile));
+          if (profile.sandbox === "bwrap") argvNow = sandboxed(argvNow, { cli: profile.cli, worktree: cwd, writable: profile.sandboxWritable });
+          ctl.resumed(resumeArgv ? "resumed its session" : "restarted with your message");
+          continue;
+        }
+        if (why?.kind === "takeover" && !killedReason) await ctl.untilUserDone(opts.signal);
+        break;
+      }
+    } finally {
+      ctl.end();
+      opts.signal?.removeEventListener("abort", onAbort);
+    }
+    const last = segments.at(-1)!;
+    stdout = segments.map((x) => x.stdout).join("\n");
+    stderr = segments.map((x) => x.stderr).join("\n");
+    exitCode = last.code;
+    parsed = parse(last.stdout, last.stderr, last.code);
+    if (segments.length > 1) {
+      // Earlier segments (before a steer) count too.
+      const all = segments.slice(0, -1).map((x) => parse(x.stdout, x.stderr, x.code));
+      parsed = { events: [...all.flatMap((p) => p.events), ...parsed.events], result: { ...parsed.result, usage: sumUsage([...all.map((p) => p.result.usage), parsed.result.usage]) } };
+      const cost = [...all, { result: parsed.result }].reduce((a, p) => a + (p.result.costUsd ?? 0), 0);
+      if (cost) parsed.result.costUsd = cost;
+    }
+    if (ctl.tookOver && !killedReason) {
+      parsed.result = {
+        ...parsed.result,
+        ok: true,
+        error: undefined,
+        summary: `${parsed.result.summary.trim() ? `${parsed.result.summary.trim()}\n\n` : ""}[The user took over this task and finished it by hand in its worktree; the changes include theirs.]`,
+      };
+    }
   }
 
   writeFileSync(join(dir, "stdout.log"), stdout);

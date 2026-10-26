@@ -34,8 +34,9 @@ export interface Layout {
 }
 
 export function computeLayout(state: State, width: number, height: number): Layout {
-  const showPanel = state.panelOpen && width >= PANEL_MIN_TOTAL;
-  const panel = showPanel ? PANEL_WIDTH : 0;
+  const showPanel = (state.panelOpen || !!state.watch) && width >= PANEL_MIN_TOTAL;
+  // Watching an agent: a wider panel, for its diff.
+  const panel = showPanel ? (state.watch ? Math.max(PANEL_WIDTH, Math.min(72, Math.floor(width * 0.42))) : PANEL_WIDTH) : 0;
   return { width, height, main: width - panel, panel, narrow: width < 72 };
 }
 
@@ -418,10 +419,34 @@ export function panelRows(state: State, w: number, h: number, ctx: ViewContext):
   const costRows: Line[] = [title("cost"), kv("orchestr.", `$${state.cost.orchestrator.toFixed(4)}`, { fg: "dim" }), kv("agents", `$${state.cost.subagents.toFixed(4)}`, { fg: "dim" })];
 
   const sections: Record<string, Line[]> = { context: ctxRows, agents: agentRows, tasks: taskRows, cost: costRows };
+  if (state.watch) {
+    const wv = state.watch;
+    const secs = Math.floor((Date.now() - wv.startedAt) / 1000);
+    const stateStyle: Style = wv.state === "running" ? { fg: "cyan" } : wv.state === "finished" ? { fg: "dim" } : { fg: "amber", bold: true };
+    const label = wv.state === "user" ? "yours — /done hands it back" : wv.state;
+    const w: Line[] = [
+      title("watch", [s(`  ${shortId(wv.taskId)}${wv.follow ? " (following)" : ""}`, { fg: "faint" })]),
+      truncate([s(wv.agent, { fg: "ivory" }), s(`${wv.model ? ` · ${wv.model.split("/").at(-1)}` : ""} · `, { fg: "dim" }), s(label, stateStyle), s(` ${Math.floor(secs / 60)}m${String(secs % 60).padStart(2, "0")}s`, { fg: "dim" })], inner),
+    ];
+    for (const l of wv.log.slice(-3)) w.push(truncate([s(`${g.attention} ${l}`, { fg: "violet" })], inner));
+    w.push([s("activity", { fg: "dim" })]);
+    if (!wv.activity.length) w.push([s("  waiting for the agent…", { fg: "faint" })]);
+    for (const a of wv.activity.slice(-8)) w.push(truncate([s(`  ${a}`, { fg: a.startsWith("✗") || a.startsWith("!") ? "fault" : "ivory" })], inner));
+    const add = wv.files.reduce((n, f) => n + f.added, 0);
+    const del = wv.files.reduce((n, f) => n + f.removed, 0);
+    w.push([s("changes", { fg: "dim" }), s(wv.files.length ? `  ${wv.files.length} file${wv.files.length === 1 ? "" : "s"} +${add} −${del}` : "  none yet", { fg: "faint" })]);
+    for (const f of wv.files.slice(0, 6)) w.push(truncate([s(`  ${f.path} `, { fg: "ivory" }), s(`+${f.added}`, { fg: "cyan" }), s(` −${f.removed}`, { fg: "fault" })], inner));
+    if (wv.diffTail.length) {
+      w.push([s("diff (last lines)", { fg: "dim" })]);
+      for (const l of wv.diffTail.slice(-10)) w.push(truncate([s(`  ${l}`, { fg: l.startsWith("+") ? "cyan" : l.startsWith("-") ? "fault" : "faint" })], inner));
+    }
+    w.push(truncate([s(wv.state === "finished" ? "/watch off closes this" : "/tell <msg> · /pause · /takeover · /watch off", { fg: "faint" })], inner));
+    sections.watch = w;
+  }
   for (const p of state.pluginPanels ?? []) {
     sections[p.id] = [title(p.title), ...(p.lines.length ? p.lines.slice(0, 12).map((l) => truncate([s(l, { fg: "dim" })], inner)) : [[s("nothing to show", { fg: "faint" })]])];
   }
-  const order = state.layout?.sections ?? ["context", "agents", "tasks", "cost"];
+  const order = [...(state.watch ? ["watch"] : []), ...(state.layout?.sections ?? ["context", "agents", "tasks", "cost"])];
   const extra = (state.pluginPanels ?? []).map((p) => p.id).filter((id) => !order.includes(id));
   const rows: Line[] = [...order, ...extra].flatMap((name) => (sections[name] ? [[], ...sections[name]] : []));
 

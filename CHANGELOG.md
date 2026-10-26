@@ -32,6 +32,13 @@ before 1.0, minor versions may change the config format (with migration notes he
   `.yxu/repomap.json`. Each subagent task gets the part relevant to it; the orchestrator gets the
   overview and a `find_code` tool. `yxu map [words]`, `/map`. Subagents are also told to use
   paths relative to the repository.
+- Watch an agent and step in: `/watch` shows a running agent's tool calls and diff live in a wider
+  side panel; `/tell` sends it a correction mid-task (it resumes its own session when the CLI can,
+  keeping its work); `/pause` and `/resume` (the timeout pauses too); `/takeover` stops it and
+  opens its worktree in your editor, `/done` hands the result back to the orchestrator.
+  Subagent output is now read as it arrives, so tool calls show live in `yxu run` too.
+- The Claude subagent adapter uses `--output-format stream-json` (live tool calls) and reads the
+  older single-object output as well.
 - A friendly message when yxu runs outside a git repository.
 
 ### Changed

@@ -41,6 +41,24 @@ type EntryOf<K extends EntryKind> = Extract<Entry, { kind: K }>;
 /** An entry before the store assigns id/version (distributes over the union). */
 export type NewEntry = Entry extends infer E ? (E extends Entry ? Omit<E, "id" | "version"> : never) : never;
 
+/** A running agent, live: what it does and what it has changed so far. */
+export interface WatchView {
+  taskId: string;
+  agent: string;
+  model?: string;
+  /** running · paused · steering · user (taken over) · finished */
+  state: string;
+  startedAt: number;
+  /** Tool calls and messages, newest last. */
+  activity: string[];
+  /** What the user did: messages sent, pauses, take-over. */
+  log: string[];
+  files: { path: string; added: number; removed: number }[];
+  diffTail: string[];
+  /** Follow whichever agent is running (no task named). */
+  follow: boolean;
+}
+
 export interface TaskView {
   taskId: string;
   agent: string;
@@ -99,6 +117,8 @@ export interface State {
   usage?: ContextUsage;
   /** A copy of the conversation is being compacted in the background. */
   compactingInBackground?: boolean;
+  /** The agent being watched in the side panel (/watch). */
+  watch?: WatchView;
   /** Slash-command palette, open while the draft starts with "/". */
   palette?: PaletteState;
   /** Rows scrolled up from the bottom; 0 follows new output. */

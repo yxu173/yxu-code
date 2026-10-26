@@ -1,5 +1,5 @@
-import { emptyUsage, type Adapter, type ParsedResult } from "../types.ts";
-import { lastLine } from "./ndjson.ts";
+import { emptyUsage, type Adapter, type AgentEvent, type ParsedResult } from "../types.ts";
+import { lastLine, ndjson } from "./ndjson.ts";
 
 const PERMISSION: Record<string, string> = {
   yolo: "bypassPermissions",
@@ -8,8 +8,10 @@ const PERMISSION: Record<string, string> = {
 };
 
 /**
- * Claude Code as a subagent (`claude -p --output-format json`): a single result object.
- * The orchestrator itself will use the Agent SDK; this adapter is for Claude workers.
+ * Claude Code as a subagent (`claude -p --output-format stream-json --verbose`): one line per
+ * message (so tool calls show live), ending with a result line. A single result object
+ * (`--output-format json`, older runs) is read too.
+ * The orchestrator itself uses the Agent SDK; this adapter is for Claude workers.
  */
 export const claude: Adapter = {
   name: "claude",
@@ -20,7 +22,8 @@ export const claude: Adapter = {
       "-p",
       task.prompt,
       "--output-format",
-      "json",
+      "stream-json",
+      "--verbose",
       "--permission-mode",
       PERMISSION[profile.permission ?? "accept-edits"]!,
       "--max-turns",
@@ -34,12 +37,27 @@ export const claude: Adapter = {
     return argv;
   },
 
+  resume(task, profile, sessionId) {
+    return [...claude.command(task, profile), "--resume", sessionId];
+  },
+
   parse(stdout, stderr, exitCode) {
     let r: any;
+    const events: AgentEvent[] = [];
     try {
       r = JSON.parse(stdout.trim());
     } catch {
-      r = undefined;
+      // stream-json: a line per message, the result last
+      for (const line of ndjson(stdout)) {
+        if (line.type === "system" && line.subtype === "init" && line.session_id) events.push({ kind: "start", sessionId: line.session_id });
+        if (line.type === "assistant" && !line.parent_tool_use_id) {
+          for (const b of line.message?.content ?? []) {
+            if (b.type === "tool_use") events.push({ kind: "tool", name: b.name, status: "started", target: b.input?.file_path ?? b.input?.command ?? b.input?.pattern ?? b.input?.path });
+            if (b.type === "text" && b.text?.trim()) events.push({ kind: "text", text: b.text });
+          }
+        }
+        if (line.type === "result") r = line;
+      }
     }
     const u = r?.usage;
     const usage = u
@@ -61,7 +79,7 @@ export const claude: Adapter = {
       turns: r?.num_turns,
     };
     if (!ok) result.error = (r?.is_error && r.result) || lastLine(stderr) || `exit code ${exitCode}`;
-    const events = r?.session_id ? [{ kind: "start" as const, sessionId: r.session_id }] : [];
+    if (r?.session_id && !events.some((e) => e.kind === "start")) events.unshift({ kind: "start", sessionId: r.session_id });
     return { events, result };
   },
 };
