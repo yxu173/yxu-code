@@ -104,19 +104,19 @@ describe("layout and interface", () => {
   test("panel sections follow ui.panel_sections; the footer can be hidden", () => {
     const { screen, rows } = app("  panel_sections: [cost, tasks]\n  footer: false\n");
     const s = screen();
-    expect(s.indexOf("C O S T")).toBeLessThan(s.indexOf("T A S K S"));
-    expect(s).not.toContain("C O N T E X T");
+    expect(s.indexOf("Cost")).toBeLessThan(s.indexOf("Tasks"));
+    expect(s).not.toContain("Context");
     expect(s).not.toContain("enter send");
     expect(rows()).toBe(40); // the frame still fills the terminal
   });
 
   test("ui.panel: false starts with the panel closed; rebound keys work", () => {
     const { a, screen } = app("  panel: false\n  keys: { panel: ctrl+b }\n");
-    expect(screen()).not.toContain("C O N T E X T");
+    expect(screen()).not.toContain("Context");
     a.input("\x10"); // ctrl+p no longer toggles
-    expect(screen()).not.toContain("C O N T E X T");
+    expect(screen()).not.toContain("Context");
     a.input("\x02"); // ctrl+b does
-    expect(screen()).toContain("C O N T E X T");
+    expect(screen()).toContain("Context");
   });
 
   test("/theme switches live and is saved like any setting; /keys lists bindings", () => {

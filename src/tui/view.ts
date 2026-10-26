@@ -1,4 +1,3 @@
-import { homedir } from "node:os";
 import { formatTokens } from "../context.ts";
 import { COMMANDS } from "./commands.ts";
 import type { Editor } from "./editor.ts";
@@ -22,7 +21,7 @@ export interface ViewContext {
 
 /** Below this width the context panel collapses instead of squeezing the conversation. */
 export const PANEL_MIN_TOTAL = 100;
-export const PANEL_WIDTH = 34;
+export const PANEL_WIDTH = 36;
 const MAX_INPUT_ROWS = 8;
 
 export interface Layout {
@@ -52,11 +51,6 @@ function rule(w: number, g: Glyphs, label?: Line, style: Style = { fg: "faint" }
   return [s(g.h.repeat(left) + " ", style), ...label, s(" " + g.h.repeat(right), style)];
 }
 
-function spaced(t: string, ascii: boolean): string {
-  // Letter-spaced capitals for section titles: an inscription, not a decoration.
-  return ascii ? t.toUpperCase() : t.toUpperCase().split("").join(" ");
-}
-
 function shortId(id: string): string {
   return id.includes("-") ? id.slice(id.lastIndexOf("-") + 1) : id.slice(-6);
 }
@@ -66,63 +60,49 @@ function elapsed(ms: number): string {
   return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
 }
 
-function tildify(p: string): string {
-  const h = homedir();
-  return p.startsWith(h) ? `~${p.slice(h.length)}` : p;
-}
-
 function pulse(ctx: ViewContext): string {
   const g = ctx.theme.glyphs;
   return ctx.theme.reducedMotion ? g.running : g.pulse[Math.floor(ctx.tick / 2) % g.pulse.length]!;
 }
 
 export const STATUS_WORD: Record<Status, string> = {
-  ready: "ready",
-  working: "working",
-  deciding: "decision required",
-  complete: "complete",
-  fault: "fault",
-  cancelling: "cancelling",
+  ready: "Ready",
+  working: "Working",
+  deciding: "Your decision",
+  complete: "Done",
+  fault: "Something failed",
+  cancelling: "Cancelling",
 };
 
-// ── header ───────────────────────────────────────────────────────────────────
+const repoName = (root: string) => root.replace(/[\\/]+$/, "").split(/[\\/]/).at(-1) || root;
 
 export function header(state: State, w: number, ctx: ViewContext): Line {
   const g = ctx.theme.glyphs;
-  const left: Line = [s(` ${g.mark} `, { fg: "cyan" }), s("YXU", { fg: "ivory", bold: true })];
-  if (w >= 88) left.push(s("  instrument for delegated thought", { fg: "dim" }));
+  const c = state.context;
+  // Where you are: the repo and branch.
+  const left: Line = [s(` ${g.mark} `, { fg: "cyan" }), s("yxu", { fg: "ivory", bold: true })];
+  const where: Line = [s("   "), s(repoName(c.root), { fg: "ivory" }), ...(c.branch ? [s(` ${g.dot} `, { fg: "faint" }), s(c.branch, { fg: "dim" })] : [])];
   if (state.demo) left.push(s("  [demo — scripted, no agents]", { fg: "amber" }));
 
+  // What is happening, in words.
   const st = state.status;
   const statusGlyph =
     st === "working" ? pulse(ctx) : st === "deciding" ? g.attention : st === "fault" ? g.fault : st === "complete" ? g.ok : st === "cancelling" ? g.running : g.idle;
   const statusStyle: Style =
-    st === "working" ? { fg: "cyan" } : st === "deciding" || st === "cancelling" ? { fg: "amber", bold: true } : st === "fault" ? { fg: "fault", bold: true } : st === "complete" ? { fg: "cyan" } : { fg: "dim" };
+    st === "working" ? { fg: "cyan", bold: true } : st === "deciding" || st === "cancelling" ? { fg: "amber", bold: true } : st === "fault" ? { fg: "fault", bold: true } : st === "complete" ? { fg: "cyan" } : { fg: "dim" };
   const status: Line = [s(`${statusGlyph} ${STATUS_WORD[st]}`, statusStyle)];
   if (st === "working" && state.since) status.push(s(` ${elapsed(ctx.now - state.since)}`, { fg: "dim" }));
-  if (state.statusNote && w >= 72) status.push(s(` · ${state.statusNote}`, { fg: "dim" }));
+  const detail = st === "working" && state.activeSlots ? `${state.activeSlots} agent${state.activeSlots === 1 ? "" : "s"} at work` : st === "working" || st === "fault" || st === "cancelling" ? state.statusNote : undefined;
+  if (detail && w >= 72) status.push(s(` ${g.dot} ${detail}`, { fg: "dim" }));
 
-  // Star map: one mark per subagent slot, lit while an agent occupies it.
-  const slots: Line = [];
-  if (w >= 60) {
-    const n = state.context.concurrency;
-    slots.push(s("   "));
-    for (let i = 0; i < n; i++) {
-      const lit = i < state.activeSlots;
-      slots.push(s(lit ? g.star : g.dot, lit ? { fg: "cyan" } : { fg: "faint" }));
-      if (i < n - 1) slots.push(s(" "));
-    }
-    slots.push(s(` ${state.activeSlots}/${n}`, { fg: "faint" }));
-  }
-
-  const right: Line = w >= 110 ? [s(`${state.context.model} · ${state.context.workflow} `, { fg: "dim" })] : [s(" ")];
-  // Degrade gracefully: shorten the note, then drop the subtitle, model, and star map — never the status.
+  const right: Line = w >= 100 ? [s(`${c.model}${c.effort ? ` ${g.dot} ${c.effort}` : ""} ${g.dot} ${c.workflow} `, { fg: "dim" })] : [s(" ")];
+  // Degrade gracefully: drop the detail, then the repo, then the model — never the status.
   const attempts: [Line, Line, Line][] = [
-    [left, [...status, ...slots], right],
-    [left, [...status.slice(0, 2), ...slots], right],
-    [left.slice(0, 2), [...status.slice(0, 2), ...slots], right],
-    [left.slice(0, 2), [...status.slice(0, 2), ...slots], [s(" ")]],
-    [left.slice(0, 2), status.slice(0, 2), [s(" ")]],
+    [[...left, ...where], status, right],
+    [[...left, ...where], status.slice(0, 2), right],
+    [left, status.slice(0, 2), right],
+    [left, status.slice(0, 2), [s(" ")]],
+    [left.slice(0, 2), status.slice(0, 1), [s(" ")]],
   ];
   for (const [l, m, r] of attempts) {
     const gap = w - lineWidth(l) - lineWidth(m) - lineWidth(r);
@@ -271,24 +251,42 @@ export function conversationRows(state: State, w: number, ctx: ViewContext): { r
 function welcome(state: State, w: number, h: number, ctx: ViewContext): Line[] {
   const g = ctx.theme.glyphs;
   const c = state.context;
-  const lines: Line[] = [
-    [s(g.mark, { fg: "cyan" })],
-    [],
-    [s("The instrument is listening.", { fg: "ivory" })],
-    [s("Describe a goal. The orchestrator plans it, local agents carry it out,", { fg: "dim" })],
-    [s("and nothing reaches your branch until you decide.", { fg: "dim" })],
-    [],
-    [s(`${c.agents.length} agents`, { fg: "dim" }), s(` ${g.dot} `, { fg: "faint" }), s(`workflow ${c.workflow}`, { fg: "dim" }), s(` ${g.dot} `, { fg: "faint" }), s(tildify(c.root), { fg: "violet" })],
-    [],
-    [s("/ commands", { fg: "faint" }), s(`   ${g.dot}   `, { fg: "faint" }), s("? help", { fg: "faint" }), s(`   ${g.dot}   `, { fg: "faint" }), s("ctrl+p context", { fg: "faint" })],
-  ];
-  const top = Math.max(0, Math.floor((h - lines.length) / 2) - 1);
-  const out: Line[] = Array.from({ length: top }, () => []);
-  for (const l of lines) {
-    const lw = lineWidth(l);
-    out.push(lw >= w ? truncate(l, w) : [s(" ".repeat(Math.floor((w - lw) / 2))), ...l]);
+  const col = Math.min(w - 4, 78);
+  const lines: Line[] = [];
+  const para = (text: string, st: Style) => lines.push(...wrapText(text, col, st));
+  lines.push([s(`${g.mark} `, { fg: "cyan" }), s("What should we work on?", { fg: "ivory", bold: true })]);
+  lines.push([]);
+  para(
+    `Describe a goal in plain words. The orchestrator plans it, your agents do the work in their own copies of the repo, and nothing touches ${c.branch || "your branch"} until you apply it.`,
+    { fg: "dim" },
+  );
+  lines.push([]);
+  const item = (cmd: string, about: string, cmdStyle: Style = { fg: "cyan" }, width = Math.min(34, Math.floor(col / 2) - 3)) => {
+    const left = truncateText(cmd, width).padEnd(width + 2);
+    lines.push(truncate([s("  "), s(left, cmdStyle), s(about, { fg: "dim" })], col));
+  };
+  lines.push([s("Try", { fg: "violet", bold: true })]);
+  item("Add a --verbose flag to the CLI", "just describe it", { fg: "ivory" });
+  item("/issue 123", "work on a GitHub issue");
+  item("/run feature add CSV export", "scout, plan, build, test, review");
+  item("/map checkout", "find where things live");
+  const recent = (state.recent ?? []).slice(0, 3);
+  if (recent.length) {
+    lines.push([]);
+    lines.push([s("Pick up where you left off", { fg: "violet", bold: true })]);
+    const idw = Math.max(...recent.map((r) => r.id.length)) + 8;
+    for (const r of recent) item(`/resume ${r.id}`, `${r.title} ${g.dot} ${r.ago}`, { fg: "cyan" }, idw);
   }
-  return out;
+  const pending = state.tasks.filter((t) => t.pending).length;
+  if (pending) {
+    lines.push([]);
+    lines.push([s(`${g.attention} `, { fg: "amber" }), s(`${pending} result${pending === 1 ? " is" : "s are"} waiting for you: `, { fg: "ivory" }), s("/tasks", { fg: "cyan" })]);
+  }
+  lines.push([]);
+  lines.push(truncate([s(`${c.agents.length} agents ${g.dot} ${c.workflow} workflow ${g.dot} `, { fg: "faint" }), s("/", { fg: "dim" }), s(" commands ", { fg: "faint" }), s(g.dot, { fg: "faint" }), s(" ?", { fg: "dim" }), s(" help", { fg: "faint" })], col));
+  const top = Math.max(1, Math.floor((h - lines.length) / 3));
+  const leftPad = s(" ".repeat(Math.max(2, Math.floor((w - col) / 2))));
+  return [...Array.from({ length: top }, () => []), ...lines.map((l) => [leftPad, ...l])];
 }
 
 // ── help ─────────────────────────────────────────────────────────────────────
@@ -320,19 +318,18 @@ function helpRows(state: State, w: number, ctx: ViewContext): Line[] {
     [g.fault, { fg: "fault" }, "fault"],
     [g.attention, { fg: "amber" }, "decision required"],
     [g.memory, { fg: "violet" }, "memory / context"],
-    [g.star, { fg: "cyan" }, "a subagent at work (header)"],
   ];
-  const rows: Line[] = [[], [s(" "), s(spaced("keys", ctx.theme.ascii), { fg: "violet" })]];
+  const rows: Line[] = [[], [s(" "), s("Keys", { fg: "violet", bold: true })]];
   for (const [k, d] of KEY_HELP) rows.push([s("   "), s(k.padEnd(24), { fg: "ivory" }), s(d, { fg: "dim" })]);
-  rows.push([], [s(" "), s(spaced("commands", ctx.theme.ascii), { fg: "violet" })]);
+  rows.push([], [s(" "), s("Commands", { fg: "violet", bold: true })]);
   rows.push([s("   "), s("type / in the message box to browse and complete these", { fg: "faint" })]);
   for (const [k, d] of COMMAND_HELP) rows.push([s("   "), s(truncateText(k, 30).padEnd(32), { fg: "ivory" }), s(d, { fg: "dim" })]);
   if (state.customHelp?.length) {
-    rows.push([], [s(" "), s(spaced("your commands", ctx.theme.ascii), { fg: "violet" })]);
+    rows.push([], [s(" "), s("Your commands", { fg: "violet", bold: true })]);
     rows.push([s("   "), s("from .yxu/commands and ~/.config/yxu/commands", { fg: "faint" })]);
     for (const [k, d] of state.customHelp) rows.push([s("   "), s(truncateText(k, 30).padEnd(32), { fg: "ivory" }), s(d, { fg: "dim" })]);
   }
-  rows.push([], [s(" "), s(spaced("signs", ctx.theme.ascii), { fg: "violet" })]);
+  rows.push([], [s(" "), s("Signs", { fg: "violet", bold: true })]);
   for (const [gl, st, d] of legend) rows.push([s("   "), s(gl, st), s("  "), s(d, { fg: "dim" })]);
   rows.push([], [s("   "), s("press ? or esc to close", { fg: "faint" })]);
   return rows.map((r) => truncate(r, w));
@@ -344,79 +341,92 @@ export function panelRows(state: State, w: number, h: number, ctx: ViewContext):
   const g = ctx.theme.glyphs;
   const c = state.context;
   const inner = w - 3;
-  const kv = (k: string, v: string, st: Style = { fg: "ivory" }): Line => truncate([s(k.padEnd(10), { fg: "dim" }), s(v, st)], inner);
-  const title = (t: string, extra?: Line): Line => [s(spaced(t, ctx.theme.ascii), { fg: "violet" }), ...(extra ?? [])];
+  const kv = (k: string, v: string, st: Style = { fg: "ivory" }): Line => truncate([s(k.padEnd(9), { fg: "dim" }), s(v, st)], inner);
+  // Plain titles: easy to scan, no letter-spacing.
+  const title = (t: string, extra?: Line): Line => [s(t[0]!.toUpperCase() + t.slice(1), { fg: "violet", bold: true }), ...(extra ?? [])];
 
   const ctxRows: Line[] = [
     title("context"),
-    kv("workflow", `${c.workflow} · ${c.mode}`),
-    kv("model", c.model),
+    kv("workflow", c.mode === "auto" ? c.workflow : `${c.workflow} (pipeline)`),
+    kv("model", `${c.model}${c.effort ? ` ${g.dot} ${c.effort}` : ""}`),
     kv("branch", c.branch || "(detached)"),
-    kv("dir", tildify(c.root)),
-    kv(
-      "memory",
-      !c.memory ? "off" : state.remembering ? `continuing · turn ${state.turn}` : "fresh conversation",
-      { fg: state.remembering ? "violet" : "dim" },
-    ),
+    kv("memory", !c.memory ? "off" : state.remembering ? `turn ${state.turn}` : "new conversation", { fg: state.remembering ? "violet" : "dim" }),
   ];
   const u = state.usage;
   if (u && u.max > 0) {
     // Gauge: filled cells + a written percentage, so it never depends on color.
-    const cells = 8;
+    const cells = 6;
     const filled = Math.min(cells, Math.round((u.tokens / u.max) * cells));
     const hot = u.percentage / 100 >= c.compact.warnAt;
     ctxRows.push(
       truncate(
         [
-          s("window".padEnd(10), { fg: "dim" }),
+          s("context".padEnd(9), { fg: "dim" }),
           s(g.gaugeFull.repeat(filled), { fg: hot ? "amber" : "cyan" }),
           s(g.gaugeEmpty.repeat(cells - filled), { fg: "faint" }),
           s(` ${Math.round(u.percentage)}%`, hot ? { fg: "amber", bold: true } : { fg: "ivory" }),
-          s(` ${formatTokens(u.tokens)}/${formatTokens(u.max)}`, { fg: "dim" }),
+          s(` of ${formatTokens(u.max)}`, { fg: "dim" }),
         ],
         inner,
       ),
     );
   }
-  ctxRows.push(
-    kv(
-      "compact",
-      state.compactingInBackground
-        ? "summarizing…"
-        : c.compact.auto
-          ? `auto${c.compact.background ? " · background" : ""} · ${c.compact.window === "auto" ? "model window" : formatTokens(c.compact.window)}`
-          : "off",
-      { fg: state.compactingInBackground ? "violet" : c.compact.auto ? "dim" : "amber" },
-    ),
-  );
+  if (state.compactingInBackground) ctxRows.push(kv("compact", "summarizing…", { fg: "violet" }));
+  else if (!c.compact.auto) ctxRows.push(kv("compact", "off", { fg: "amber" }));
   const extras = [
     c.include.length ? `${c.include.length} file${c.include.length === 1 ? "" : "s"}` : "",
     c.hasNotes ? "notes" : "",
     c.projectInstructions ? "" : "no CLAUDE.md",
   ].filter(Boolean);
   if (extras.length) ctxRows.push(kv("added", extras.join(" · "), { fg: "violet" }));
-  if (c.verify) ctxRows.push(kv("verify", c.verify, { fg: "dim" }));
+  if (c.verify) ctxRows.push(kv("checks", c.verify, { fg: "dim" }));
 
-  const agentRows: Line[] = [title("agents", [s(`  ${state.activeSlots}/${c.concurrency} active`, { fg: "faint" })])];
-  for (const a of c.agents) agentRows.push(truncate([s(a.name.padEnd(13), { fg: "ivory" }), s(`${a.cli}${a.model ? ` · ${a.model.split("/").at(-1)}` : ""}`, { fg: "dim" })], inner));
+  // Agents grouped by the model they run, so ten agents fit in a few rows; busy ones light up.
+  const busy = new Set(state.tasks.filter((t) => t.state === "running").map((t) => t.agent));
+  const agentRows: Line[] = [
+    title("agents", [s(`  ${state.activeSlots ? `${state.activeSlots} of ${c.concurrency} at work` : `${c.agents.length}, ${c.concurrency} at a time`}`, { fg: state.activeSlots ? "cyan" : "faint" })]),
+  ];
+  const groups = new Map<string, string[]>();
+  for (const a of c.agents) {
+    const key = `${a.cli}\t${a.model ? a.model.split("/").at(-1) : "default model"}`;
+    groups.set(key, [...(groups.get(key) ?? []), a.name]);
+  }
+  for (const [key, names] of groups) {
+    const [cli, model] = key.split("\t") as [string, string];
+    agentRows.push(truncate([s(`${cli} `, { fg: "faint" }), s(model, { fg: "dim" })], inner));
+    const line: Line = [s("  ")];
+    let used = 2;
+    for (const n of names) {
+      const piece = busy.has(n) ? `${pulse(ctx)} ${n}` : n;
+      if (used + piece.length + 1 > inner && used > 2) {
+        agentRows.push(line.splice(0));
+        line.push(s("  "));
+        used = 2;
+      }
+      line.push(s(piece, busy.has(n) ? { fg: "cyan", bold: true } : { fg: "ivory" }), s(" "));
+      used += piece.length + 1;
+    }
+    agentRows.push(line);
+  }
 
   const taskRows: Line[] = [title("tasks")];
   if (!state.tasks.length) taskRows.push([s("none yet", { fg: "faint" })]);
-  const tasks = state.tasks.slice(-12);
+  const tasks = state.tasks.slice(-10);
   for (const t of tasks) {
-    const glyph = t.state === "running" ? pulse(ctx) : t.state === "failed" ? g.fault : t.state === "discarded" ? g.idle : g.ok;
-    const st: Style = t.state === "running" ? { fg: "cyan" } : t.state === "failed" ? { fg: "fault" } : { fg: "dim" };
-    const tag = t.pending ? "pending" : t.state === "running" ? "running" : t.state;
+    const glyph = t.state === "running" ? pulse(ctx) : t.state === "failed" ? g.fault : t.state === "discarded" ? g.idle : t.pending ? g.attention : g.ok;
+    const st: Style = t.state === "running" ? { fg: "cyan" } : t.state === "failed" ? { fg: "fault" } : t.pending ? { fg: "amber" } : { fg: "dim" };
+    const tag = t.pending ? "to apply" : t.state === "running" ? "working" : t.state === "ok" ? "done" : t.state;
     taskRows.push(
-      truncate(
-        [s(glyph, st), s(" "), s(`${shortId(t.taskId)} `.padEnd(7), { fg: "ivory" }), s(`${t.agent} `.padEnd(10), { fg: "dim" }), s(tag, t.pending ? { fg: "amber" } : { fg: "faint" })],
-        inner,
-      ),
+      truncate([s(glyph, st), s(" "), s(`${t.agent}`.padEnd(10), { fg: "ivory" }), s(`${tag}`.padEnd(9), t.pending ? { fg: "amber" } : st.fg === "cyan" ? { fg: "cyan" } : { fg: "dim" }), s(shortId(t.taskId), { fg: "faint" })], inner),
     );
   }
   if (state.tasks.length > tasks.length) taskRows.push([s(`${g.ellipsis} ${state.tasks.length - tasks.length} earlier`, { fg: "faint" })]);
 
-  const costRows: Line[] = [title("cost"), kv("orchestr.", `$${state.cost.orchestrator.toFixed(4)}`, { fg: "dim" }), kv("agents", `$${state.cost.subagents.toFixed(4)}`, { fg: "dim" })];
+  const money = (n: number) => (n === 0 ? "$0.00" : n < 0.01 ? "<$0.01" : `$${n.toFixed(2)}`);
+  const costRows: Line[] = [
+    title("cost", [s(`  ${money(state.cost.orchestrator + state.cost.subagents)}`, { fg: "ivory" })]),
+    truncate([s(money(state.cost.orchestrator), { fg: "dim" }), s(" orchestrator  ", { fg: "faint" }), s(money(state.cost.subagents), { fg: "dim" }), s(" agents", { fg: "faint" })], inner),
+  ];
 
   const sections: Record<string, Line[]> = { context: ctxRows, agents: agentRows, tasks: taskRows, cost: costRows };
   if (state.watch) {
@@ -622,30 +632,28 @@ function footerRow(state: State, w: number, ctx: ViewContext): Line {
       : state.gate
       ? [["y", "continue"], ["n", "stop the workflow"], ["pgup/pgdn", "scroll"], ["?", "help"]]
       : state.status === "deciding"
-        ? [["a", "apply"], ["v", "diff"], ["l", "later"], ["x", "discard"], ["?", "help"]]
+        ? [["a", "apply"], ["v", "view diff"], ["p", "pull request"], ["l", "later"], ["x", "discard"]]
         : state.status === "working" || state.status === "cancelling"
-          ? [["esc", "cancel"], ["pgup/pgdn", "scroll"], ["ctrl+↑↓", "select"], ["ctrl+o", "details"], ["?", "help"]]
-          : [["enter", "send"], ["/", "commands"], ["alt+enter", "newline"], ["↑↓", "history"], ["pgup/pgdn", "scroll"], ["ctrl+p", "context"], ["?", "help"]];
-  const out: Line = [s(" ")];
-  for (const [k, d] of keys) {
-    const piece: Line = [s(k, { fg: "ivory" }), s(` ${d}`, { fg: "faint" }), s("   ")];
-    if (lineWidth(out) + lineWidth(piece) > w) break;
-    out.push(...piece);
-  }
-  if (ctx.theme.reducedMotion && w - lineWidth(out) > 16) out.push(s("reduced motion", { fg: "faint" }));
+          ? [["esc", "cancel"], ["/watch", "follow an agent"], ["ctrl+o", "details"], ["?", "help"]]
+          : [["enter", "send"], ["/", "commands"], ["alt+enter", "new line"], ["↑", "history"], ["ctrl+p", "panel"], ["?", "help"]];
+  const out: Line = [s("  ")];
+  keys.forEach(([k, d], i) => {
+    const piece: Line = [...(i ? [s(`  ${ctx.theme.glyphs.dot}  `, { fg: "faint" })] : []), s(k, { fg: "dim", bold: true }), s(` ${d}`, { fg: "faint" })];
+    if (lineWidth(out) + lineWidth(piece) <= w) out.push(...piece);
+  });
   return out;
 }
 
 function placeholder(state: State): string {
   switch (state.status) {
     case "working":
-      return "working — esc to cancel; you can draft your next message";
+      return "Agents are working. You can write your next message now";
     case "cancelling":
-      return "cancelling…";
+      return "Cancelling…";
     case "deciding":
-      return "choose a, v, l or x — or write a follow-up";
+      return "Press a to apply, v to see the changes, or reply";
     default:
-      return state.turn === 0 ? "Describe a goal, or type / for commands" : "Continue, refine, or ask for something new";
+      return state.turn === 0 ? "Describe what you want done, or type / for commands" : "Reply, refine, or ask for something new";
   }
 }
 
@@ -671,21 +679,24 @@ export function renderFrame(state: State, editor: Editor, width: number, height:
       : state.gate
         ? gateRows(state, L.main, ctx)
         : decisionRows(state, L.main, ctx);
-  const prefix = `${state.status === "working" ? g.dot : g.you} `;
-  const input = inputRows(editor, L.main, 3); // " ▹ " lead
+  // The message box: rounded, lit while yxu is waiting for you, dim while it works.
+  const busy = state.status === "working" || state.status === "cancelling";
+  const boxW = Math.max(12, L.main - 2);
+  const border: Style = { fg: busy ? "faint" : "cyan" };
+  const input = inputRows(editor, boxW, 5); // "│ › " lead and " │" end
   const maxInput = Math.min(MAX_INPUT_ROWS, Math.max(1, Math.floor(height / 4)));
   const inputShown = Math.min(input.rows.length, maxInput);
   // Keep the cursor row visible when the draft is taller than the box.
   const inputStart = Math.max(0, Math.min(input.cursor.row - inputShown + 1, input.rows.length - inputShown));
-  const inputLabel: Line = [s("message", { fg: "faint" })];
-  const inputBlock: Line[] = [rule(L.main, g, inputLabel)];
+  const inputBlock: Line[] = [[s(" "), s(g.rtl + g.h.repeat(boxW - 2) + g.rtr, border)]];
   const isEmpty = editor.isEmpty;
   for (let i = 0; i < inputShown; i++) {
     const text = input.rows[inputStart + i] ?? "";
-    const lead = i === 0 && inputStart === 0 ? s(` ${prefix}`, { fg: state.status === "working" ? "faint" : "cyan", bold: true }) : s("   ");
-    if (isEmpty && i === 0) inputBlock.push([lead, s(placeholder(state), { fg: "faint" })]);
-    else inputBlock.push([lead, s(text, { fg: "ivory" })]);
+    const lead = i === 0 && inputStart === 0 ? s(`${g.prompt} `, { fg: busy ? "faint" : "cyan", bold: true }) : s("  ");
+    const content: Line = isEmpty && i === 0 ? [lead, s(placeholder(state), { fg: "faint" })] : [lead, s(text, { fg: "ivory" })];
+    inputBlock.push([s(" "), s(`${g.v} `, border), ...pad(truncate(content, boxW - 4), boxW - 4), s(` ${g.v}`, border)]);
   }
+  inputBlock.push([s(" "), s(g.rbl + g.h.repeat(boxW - 2) + g.rbr, border)]);
   // ui.footer: false hides the key hints (flash messages still show).
   const footer: Line[] = state.layout?.footer === false && !state.flash ? [] : [footerRow(state, width, ctx)];
 
@@ -728,6 +739,6 @@ export function renderFrame(state: State, editor: Editor, width: number, height:
   for (const r of footer) out.push(toAnsi(pad(r, width), theme));
 
   const cursorRow = headerRows.length + body.length + decision.length + 1 + (input.cursor.row - inputStart);
-  const cursor = state.helpOpen ? undefined : { row: cursorRow, col: 3 + input.cursor.col };
+  const cursor = state.helpOpen ? undefined : { row: cursorRow, col: 5 + input.cursor.col };
   return { rows: out.slice(0, height), cursor };
 }

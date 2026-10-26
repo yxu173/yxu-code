@@ -3,6 +3,17 @@
 All notable changes are listed here. The project uses [semantic versioning](https://semver.org);
 before 1.0, minor versions may change the config format (with migration notes here).
 
+## Unreleased
+
+### Changed
+- A calmer, easier interface. The header says where you are (repo · branch) and what is happening
+  in words ("Working 1:35 · 2 agents at work", "Your decision"). The welcome screen offers things to
+  try, this repo's recent sessions to resume, and results waiting for you. The side panel uses plain
+  titles, groups agents by the model they run (busy ones light up), names task states ("working",
+  "to apply", "done") and shows cost in cents. The message box is a rounded box that is lit while
+  yxu waits for you; key hints are fewer and match what you can do now (with [p] at a decision).
+- `bun scripts/tui-snapshot.ts` renders interface scenes to HTML in the real colors, for design work.
+
 ## 0.1.1 (2026-10-26)
 
 ### Added

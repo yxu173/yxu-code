@@ -198,6 +198,7 @@ export class App {
     if (!o.demo) this.refreshMap();
     this.saved = newSession(o.root, o.folder ?? o.root, this.conv.state);
     if (o.resume) this.openSession(o.resume);
+    this.loadRecent();
     const ui = this.cfg.ui;
     this.store.set({ panelOpen: ui.panel, layout: { sections: ui.panel_sections, footer: ui.footer } });
     try {
@@ -744,6 +745,7 @@ export class App {
     this.stopBackgroundCompaction();
     this.conv.reset();
     this.saved = newSession(this.o.root, this.o.folder ?? this.o.root, this.conv.state);
+    this.loadRecent();
     this.store.set({ remembering: false });
   }
 
@@ -1927,6 +1929,20 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
 
   // ── sessions ──────────────────────────────────────────────────────────────
 
+  /** This repo's latest sessions, for the welcome screen. */
+  private loadRecent() {
+    if (this.o.demo) return;
+    try {
+      const recent = listSessions({ root: this.o.root })
+        .filter((x) => x.id !== this.saved.id)
+        .slice(0, 3)
+        .map((x) => ({ id: x.id, title: x.title, turns: x.conversation.turn, ago: ago(x.updatedAt) }));
+      this.store.set({ recent });
+    } catch {
+      // no session store: nothing to offer
+    }
+  }
+
   /** Save this session (no-op until its first turn). */
   private persist() {
     if (this.o.demo) return;
@@ -2157,6 +2173,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
       workflow: this.workflow?.name ?? "default",
       mode: this.workflow?.mode ?? "auto",
       model: orchestratorLabel(cfg),
+      effort: cfg.orchestrator.effort,
       agents: (this.workflow?.allowed_agents ?? Object.keys(cfg.agents)).map((name) => ({ name, cli: cfg.agents[name]!.cli, model: cfg.agents[name]!.model })),
       concurrency: cfg.settings.concurrency,
       verify: cfg.settings.verify,

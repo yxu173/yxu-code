@@ -217,7 +217,7 @@ describe("watching and stepping in from the interface", () => {
     app.input("go\r");
     await until(() => app.store.state.watch?.activity.some((a) => a.includes("edit a.txt")) ?? false);
     let s = screen();
-    expect(s).toContain("W A T C H");
+    expect(s).toContain("Watch");
     expect(s).toContain("(following)");
     expect(s).toContain("✓ edit a.txt");
     await until(() => (app.store.state.watch?.files.length ?? 0) > 0);
