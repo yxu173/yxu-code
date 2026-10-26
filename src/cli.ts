@@ -296,7 +296,7 @@ async function run(argv: string[]) {
         ? runPipeline({ goal, cfg, workflow, root, abort: ac, render: r.render, inputs, gate: cliGate(values.yes), session })
         : runOrchestrator({ goal, cfg, workflow, root, abort: ac, render: r.render, session, resume: next.resume, preamble: next.preamble }),
     );
-    if (auto && !outcome.cancelled) await rememberConversation(root, cfg, conv, { goal, outcome, usedSummary: next.usesSummary });
+    if (auto && !outcome.cancelled) await rememberConversation(root, cfg, conv, { goal, outcome, usedSummary: next.usesSummary, continuing: Boolean(values.continue) });
 
     // The final report is usually the last assistant message, already printed above.
     if (outcome.finalText.trim() !== r.lastText()) console.log(`${bold("─── result ───")}\n${outcome.finalText}\n`);
@@ -314,13 +314,13 @@ async function run(argv: string[]) {
  * After an auto run: save the conversation for `yxu run --continue`, keep a summary made during the
  * run, and if the window is filling, summarize it in a detached process (the shell is not held).
  */
-async function rememberConversation(root: string, cfg: Config, conv: Conversation, t: { goal: string; outcome: RunOutcome; usedSummary: boolean }) {
+async function rememberConversation(root: string, cfg: Config, conv: Conversation, t: { goal: string; outcome: RunOutcome; usedSummary: boolean; continuing: boolean }) {
   const disk = loadConversation(root);
   // A summary finished by a detached process during this run belongs to this conversation too.
   if (disk?.state.id === conv.state.id && disk.summary && !conv.summary && !t.usedSummary) conv.state.summary = disk.summary;
   conv.finish({ goal: t.goal, finalText: t.outcome.finalText, sessionId: t.outcome.sdkSessionId, usedSummary: t.usedSummary });
   const left = t.outcome.backgroundSummary;
-  if (left && !conv.summary) {
+  if (left && !conv.summary && t.continuing) {
     // Started near the end of the run: usually seconds from done. Ctrl-C skips it.
     console.log(dim("finishing the background summary for `yxu run -c`… (Ctrl-C skips)"));
     const done = await left.done;
@@ -329,7 +329,8 @@ async function rememberConversation(root: string, cfg: Config, conv: Conversatio
   saveConversation(root, conv);
   const k = cfg.compact;
   const u = t.outcome.context;
-  if (!conv.summary && conv.sessionId && k.auto && k.background && u && worthCompacting(u, k)) {
+  // Only for conversations being continued (-c): a summary of a one-off run would go unused.
+  if (t.continuing && !conv.summary && conv.sessionId && k.auto && k.background && u && worthCompacting(u, k)) {
     const [cmd, ...args] = selfCommand();
     const child = spawn(cmd!, [...args, "__summarize", conv.state.id, conv.sessionId, String(conv.turn)], { cwd: root, detached: true, stdio: "ignore" });
     child.unref();

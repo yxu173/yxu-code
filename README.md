@@ -319,8 +319,9 @@ the orchestrator until it is done. yxu summarizes in the background instead, so 
   time, and only when the conversation itself is at least a tenth of the window (a summary can't
   shrink the system prompt and tools, so it would only repeat).
 - **`yxu run -c`** (`--continue`) continues the repo's last conversation (`.yxu/conversation.json`).
-  After a run past `background_at`, a detached process summarizes it, so your shell is not held;
-  the next `yxu run -c` continues from the summary.
+  After a `-c` run past `background_at`, a detached process summarizes it, so your shell is not
+  held; the next `yxu run -c` continues from the summary. (A one-off `yxu run` isn't summarized
+  afterwards: that summary would usually go unused.)
 
 Claude Code's own auto-compaction stays as the fallback. Measured with Haiku: between turns, a
 31k-token conversation summarized to 839 tokens in about 8 seconds with the input free; during a
