@@ -53,7 +53,7 @@ describe("yxu's copy of Claude's transcripts", () => {
     await new FileSessionStore().append({ projectKey: "-x", sessionId: "kept" }, [{ type: "user", uuid: "a" }]);
     expect(await conversationExists("kept", data)).toBe(true);
     expect(await conversationExists("00000000-0000-4000-8000-000000000000", data)).toBe(false);
-  });
+  }, 30_000); // Claude Code's history lookup is slow on Windows runners
 
   test("without either copy, the turns yxu recorded are the recap", () => {
     expect(recapPreamble([])).toBe("");
