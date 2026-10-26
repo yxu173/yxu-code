@@ -25,7 +25,16 @@ export function tryGit(cwd: string, ...args: string[]): { ok: boolean; out: stri
 export const YXU_IDENTITY = ["-c", "user.name=yxu", "-c", "user.email=yxu@localhost"];
 
 export function repoRoot(cwd: string): string {
-  return git(cwd, "rev-parse", "--show-toplevel");
+  const r = tryGit(cwd, "rev-parse", "--show-toplevel");
+  if (r.ok) return r.out;
+  if (/not a git repository/i.test(r.err)) {
+    throw new Error(
+      `${cwd} is not inside a git repository. yxu runs each agent in its own git worktree, so it needs one:\n` +
+        `  cd into a project that uses git, or start one here with:\n` +
+        `  git init && git commit --allow-empty -m init`,
+    );
+  }
+  throw new Error(`git rev-parse --show-toplevel failed: ${r.err}`);
 }
 
 export const branchFor = (taskId: string) => `yxu/${taskId}`;
