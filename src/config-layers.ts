@@ -137,6 +137,9 @@ function setPath(obj: Obj, path: string[], value: unknown) {
   o[path.at(-1)!] = value;
 }
 
+/** Agent fields that describe its job, kept when a higher layer moves it to another cli. */
+const ROLE_FIELDS = ["description", "instructions", "permission", "timeout", "max_turns", "sandbox", "sandbox_writable"];
+
 /** Merge `over` into `base` in place, recording which layer set each leaf. */
 function merge(base: Obj, over: Obj, layer: string, origins: Obj, prefix: string[] = []) {
   for (const [k, v] of Object.entries(over)) {
@@ -152,7 +155,12 @@ function merge(base: Obj, over: Obj, layer: string, origins: Obj, prefix: string
     }
     const cur = base[k];
     const cliChanged = prefix.length === 1 && prefix[0] === "agents" && isObj(cur) && isObj(v) && v.cli !== undefined && v.cli !== cur.cli;
-    if (isObj(v) && isObj(cur) && !cliChanged) {
+    if (cliChanged) {
+      // A new cli: its model and command settings no longer apply, but the agent's role does.
+      for (const f of Object.keys(cur)) if (!ROLE_FIELDS.includes(f)) delete cur[f];
+      for (const o of Object.keys(origins)) if (o.startsWith(`${key}.`) && !ROLE_FIELDS.includes(o.slice(key.length + 1).split(".")[0]!)) delete origins[o];
+    }
+    if (isObj(v) && isObj(cur)) {
       merge(cur, v, layer, origins, path);
       continue;
     }

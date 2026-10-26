@@ -3,6 +3,7 @@ import { z } from "zod";
 import { loadLayers } from "./config-layers.ts";
 import { condition, evaluate, render } from "./expr.ts";
 import { buildKeymap } from "./keymap.ts";
+import { PROVIDERS, teamYaml } from "./team.ts";
 import type { AgentProfile } from "./types.ts";
 
 /** "90s", "15m", "1h" or plain seconds → milliseconds. */
@@ -50,6 +51,7 @@ const AgentSchema = z.object({
   timeout: Duration.optional().describe('Kill the task after this long: "90s", "15m", "1h" or seconds'),
   agent: z.string().optional().describe("Named agent/persona inside the CLI, if it has them"),
   description: z.string().optional().describe("Tells the orchestrator when to use this agent"),
+  instructions: z.string().optional().describe("The agent's role: put before every task it gets (e.g. how a reviewer should report)"),
 });
 
 const StepId = z.string().regex(/^[a-z][a-z0-9_-]*$/, "step ids are lowercase words");
@@ -318,99 +320,12 @@ export type CompactConfig = Config["compact"];
 export const SCHEMA_URL = "https://raw.githubusercontent.com/yxu173/yxu-code/main/schema/yxu.schema.json";
 export const SCHEMA_COMMENT = `# yaml-language-server: $schema=${SCHEMA_URL}`;
 
-export const DEFAULT_YAML = `${SCHEMA_COMMENT}
-# yxu configuration. Agents are local CLIs; the orchestrator is Claude Code.
-# Personal overrides for this repo go in yxu.local.yaml (git-ignored); see \`yxu config\`.
-version: 1
-
-orchestrator:
-  model: opus            # Claude model that plans, delegates, and reviews
-  effort: high
-  max_budget_usd: 5      # stop the orchestrator if it spends more than this
-
-agents:
-  coder:
-    cli: commandcode
-    model: deepseek/deepseek-v4-flash
-    # permission: accept-edits (default) edits files only · plan: read only
-    #             yolo: may run any command without asking (opt in per agent)
-    max_turns: 60
-    timeout: 15m
-    description: Fast, cheap coder for small well-scoped tasks.
-  heavy-coder:
-    cli: commandcode
-    model: deepseek/deepseek-v4-pro
-    timeout: 30m
-    description: Stronger DeepSeek model for tasks touching many files.
-  oc-coder:
-    cli: opencode
-    model: opencode/deepseek-v4.1-flash-free
-    timeout: 15m
-    description: OpenCode with free DeepSeek; good fallback coder.
-  claude-coder:
-    cli: claude
-    model: sonnet
-    timeout: 20m
-    description: Claude Sonnet for tricky logic or when DeepSeek fails twice.
-  # Any agent that speaks ACP: live progress, and it asks you before running commands.
-  # oc-acp:
-  #   cli: acp
-  #   command: [opencode, acp]          # or [gemini, --experimental-acp]
-  #   model: opencode/deepseek-v4.1-flash-free
-  #   allow: ["execute:npm test*"]      # commands it may run without asking
-  #   sandbox: bwrap                    # Linux: it can only write to its worktree
-  # Any other CLI, described here (see docs/AGENTS.md):
-  # aider:
-  #   cli: generic
-  #   command: [aider, --yes-always, --no-auto-commits, --model, "{{model}}", --message, "{{task}}"]
-  #   model: deepseek/deepseek-chat
-
-workflows:
-  default:
-    mode: auto
-    instructions: |
-      Prefer \`coder\` for small tasks and \`heavy-coder\` for tasks touching more than 5 files.
-      If \`coder\` is unavailable or fails, use \`oc-coder\`. Escalate to \`claude-coder\`
-      only after a DeepSeek agent has failed twice on the same task.
-
-  # A fixed pipeline: plan → implement in parallel → verify (auto-fix) → review loop.
-  feature:
-    mode: pipeline
-    steps:
-      - id: plan
-        type: plan
-        max_tasks: 4
-      - id: implement
-        type: delegate
-        agent: coder
-        for_each: plan
-      - id: verify
-        type: verify
-        fix_agent: coder
-      - id: review
-        type: review
-        fix_agent: coder
-        max_rounds: 2
-
-# What the orchestrator sees. Change live in the TUI with /context; persist with /context save.
-context:
-  memory: true            # continue the same orchestrator conversation across messages (TUI)
-  project_instructions: true  # load CLAUDE.md
-  include: []             # files added to the orchestrator's context, e.g. [docs/ARCHITECTURE.md]
-  # notes: |              # standing instructions, e.g. "never touch migrations/"
-
-# Summarizing long orchestrator conversations. Change live with /compact.
-compact:
-  auto: true              # compact automatically near the window
-  window: auto            # or a token count between 100k and 1m, e.g. 200k
-  # instructions: Keep task ids, file paths, and the user's decisions.
-  warn_at: 0.8            # warn in the TUI at 80% of the window
-
-settings:
-  concurrency: 3          # subagents running at the same time
-  resolver: claude-coder  # agent that resolves merge conflicts when combining parallel work
-  verify: npm test        # command that checks a result (used by verify steps and the verify tool)
-`;
+/** The built-in config (until a file defines agents): the starter team on Command Code, OpenCode and Claude. */
+export const DEFAULT_YAML = teamYaml(
+  { providers: ["commandcode", "opencode", "claude"].map((id) => PROVIDERS.find((p) => p.id === id)!), verify: "npm test" },
+  SCHEMA_COMMENT,
+  "built in (`yxu init` writes one that fits your machine)",
+);
 
 /** Agent clis and orchestrators that plugins add (for validation). */
 export interface Extensions {
@@ -449,9 +364,9 @@ export function validateConfig(raw: unknown, source: string, where: (path: strin
     if (!cfg.agents[cfg.orchestrator.agent]) throw bad("orchestrator.agent", `orchestrator.agent "${cfg.orchestrator.agent}" is not an agent`);
   }
   for (const [name, a] of Object.entries(cfg.agents)) {
-    const abad = (msg: string) => bad(`agents.${name}`, `agent "${name}": ${msg}`);
+    const abad = (msg: string, field?: string) => bad(`agents.${name}${field ? `.${field}` : ""}`, `agent "${name}": ${msg}`);
     if (!(BUILTIN_CLIS as readonly string[]).includes(a.cli) && !ext.clis.includes(a.cli)) {
-      throw abad(`unknown cli "${a.cli}" (built in: ${BUILTIN_CLIS.join(", ")}${ext.clis.length ? `; from plugins: ${ext.clis.join(", ")}` : ""}). If a plugin adds it, check \`yxu plugins\`: it may wait for approval`);
+      throw abad(`unknown cli "${a.cli}" (built in: ${BUILTIN_CLIS.join(", ")}${ext.clis.length ? `; from plugins: ${ext.clis.join(", ")}` : ""}). If a plugin adds it, check \`yxu plugins\`: it may wait for approval`, "cli");
     }
     if ((a.cli === "acp" || a.cli === "generic") && !a.command) throw abad(`cli: ${a.cli} needs \`command\``);
     if (a.cli !== "acp" && a.cli !== "generic" && a.command) throw abad(`\`command\` is only for cli: acp or generic`);
@@ -609,6 +524,25 @@ export function resolveEnv(env: Record<string, string>): Record<string, string> 
       return [k, m ? (process.env[m[1]!] ?? "") : v];
     }),
   );
+}
+
+/** Where the config names an agent (so removing it would break those places). */
+export function agentRefs(cfg: Config, name: string): string[] {
+  const refs: string[] = [];
+  if (cfg.settings.resolver === name) refs.push("settings.resolver");
+  if (cfg.settings.default_agent === name) refs.push("settings.default_agent");
+  if (cfg.orchestrator.agent === name) refs.push("orchestrator.agent");
+  const walk = (wf: string, steps: Step[] = []) => {
+    for (const st of steps) {
+      if ((st.type === "delegate" && st.agent === name) || ((st.type === "verify" || st.type === "review") && st.fix_agent === name)) refs.push(`workflow ${wf}, step ${st.id}`);
+      if (st.type === "parallel" || st.type === "loop") walk(wf, st.steps);
+    }
+  };
+  for (const [wf, w] of Object.entries(cfg.workflows)) {
+    if (w.allowed_agents?.includes(name)) refs.push(`workflow ${wf}, allowed_agents`);
+    walk(wf, w.steps);
+  }
+  return refs;
 }
 
 /** Who orchestrates, for display: "opus", "agent oc", or a plugin orchestrator's name. */

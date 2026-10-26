@@ -6,7 +6,7 @@ import { taskData } from "./actions.ts";
 import { branchFor, collectChanges, createWorktree, git, removeWorktree, worktreeFor, YXU_IDENTITY } from "./git.ts";
 import { formatHookFailure, hasHooks, runHooks } from "./hooks.ts";
 import { newTaskId, runTask, Semaphore, writeTaskRecord } from "./runner.ts";
-import { prompt, SUBAGENT_PREAMBLE } from "./prompts.ts";
+import { taskPrompt } from "./prompts.ts";
 import type { Asker } from "./permissions.ts";
 import { guard, untrustedYolo } from "./trust.ts";
 import { emptyUsage, type AgentEvent, type TaskResult } from "./types.ts";
@@ -117,7 +117,7 @@ export class TaskOps {
       const result = await runTask({
         agentName: agent,
         profile,
-        prompt: `${prompt(this.root, "subagent-preamble", SUBAGENT_PREAMBLE).trimEnd()}\n\nTASK:\n${task}`,
+        prompt: taskPrompt(this.root, { permission: profile.permission, instructions: def.instructions }, task),
         title: task,
         cwd: this.root,
         baseRef: base.baseRef,
@@ -173,7 +173,7 @@ export class TaskOps {
       combineTasks({
         root: this.root,
         taskIds,
-        resolver: resolverName ? { name: resolverName, profile: toProfile(this.cfg.agents[resolverName]!) } : undefined,
+        resolver: resolverName ? { name: resolverName, profile: toProfile(this.cfg.agents[resolverName]!), instructions: this.cfg.agents[resolverName]!.instructions } : undefined,
         signal: this.opts.signal,
         onConflict: this.hooks.onConflict,
       }),

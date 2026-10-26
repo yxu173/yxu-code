@@ -154,7 +154,7 @@ describe("renderTemplate", () => {
 describe("pipeline config validation", () => {
   const base = "agents:\n  coder: { cli: opencode }\nworkflows:\n  w:\n    mode: pipeline\n    steps:\n";
   test("default yaml has a valid feature pipeline", () => {
-    expect(config(DEFAULT_YAML).workflows.feature?.steps?.map((s) => s.type)).toEqual(["plan", "delegate", "verify", "review"]);
+    expect(config(DEFAULT_YAML).workflows.feature?.steps?.map((s) => s.type)).toEqual(["delegate", "plan", "delegate", "delegate", "verify", "review"]);
   });
   test("for_each must reference an earlier plan step", () => {
     expect(() => config(`${base}      - { id: impl, type: delegate, agent: coder, for_each: plan }\n`)).toThrow(/for_each/);

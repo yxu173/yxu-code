@@ -125,7 +125,7 @@ export async function runPipeline(opts: PipelineOptions): Promise<RunOutcome> {
   let softFail = false;
 
   const agentList = ops.allowed
-    .map((n) => `- ${n}: ${cfg.agents[n]!.cli}/${cfg.agents[n]!.model ?? "default"}${cfg.agents[n]!.description ? ` — ${cfg.agents[n]!.description}` : ""}`)
+    .map((n) => `- ${n}: ${cfg.agents[n]!.cli}/${cfg.agents[n]!.model ?? "default"}${cfg.agents[n]!.permission === "plan" ? " (read-only: reports, makes no changes)" : ""}${cfg.agents[n]!.description ? ` — ${cfg.agents[n]!.description}` : ""}`)
     .join("\n");
 
   const ask = async <T extends z.ZodType>(system: string, user: string, schema: T, head?: string) => {

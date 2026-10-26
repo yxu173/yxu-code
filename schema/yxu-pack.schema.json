@@ -233,6 +233,10 @@
                   "description": {
                     "description": "Tells the orchestrator when to use this agent",
                     "type": "string"
+                  },
+                  "instructions": {
+                    "description": "The agent's role: put before every task it gets (e.g. how a reviewer should report)",
+                    "type": "string"
                   }
                 }
               },

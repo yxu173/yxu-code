@@ -26,8 +26,15 @@ export function saveConfigPatch(root: string, patch: ConfigPatch, layer: FileLay
   else text = newLayerText(layer);
   const doc = parseDocument(text);
   for (const { path, value } of patch) {
-    if (value === undefined) doc.deleteIn(path);
-    else doc.setIn(path, value);
+    if (value === undefined || value === null) doc.deleteIn(path);
+    // Objects (a new agent) become YAML nodes, so later changes can set values inside them.
+    else doc.setIn(path, typeof value === "object" ? doc.createNode(value) : value);
+  }
+  // null means "gone": deleting it from this file is enough unless a lower layer still sets it.
+  const removals = patch.filter((p) => p.value === null);
+  if (removals.length) {
+    const merged = loadLayers(root, { override: { [layer]: doc.toString() } }).raw;
+    for (const { path } of removals) if (getIn(merged, path) !== undefined) doc.setIn(path, null);
   }
   const out = doc.toString();
   loadLayers(root, { override: { [layer]: out } }); // throws with a readable message if invalid
@@ -36,6 +43,9 @@ export function saveConfigPatch(root: string, patch: ConfigPatch, layer: FileLay
   if (layer === "local") excludeFromGit(root, "yxu.local.yaml");
   return file;
 }
+
+const getIn = (obj: unknown, path: string[]): unknown =>
+  path.reduce<unknown>((o, k) => (o && typeof o === "object" ? (o as Record<string, unknown>)[k] : undefined), obj);
 
 /** Keep a personal file out of commits without touching the team's .gitignore. */
 export function excludeFromGit(root: string, pattern: string) {

@@ -48,7 +48,7 @@ npm, Homebrew and AUR installs update through their own package manager.
 ```sh
 cd your-git-repo
 yxu doctor         # checks Claude Code, your agent CLIs and the config
-yxu init           # finds your agent CLIs, picks models and a starter pack, writes yxu.yaml
+yxu init           # finds your agent CLIs, writes a team of agents by role (below) and a starter pack
 yxu                # open the interface; describe a goal
 yxu --demo         # a scripted tour of the interface: no agents, no git changes, no cost
 ```
@@ -57,6 +57,52 @@ A typical run: Opus reads the repo and plans, then delegates tasks to your agent
 worktrees. It checks the results (and your `verify` command), then asks you to **apply**, **view
 the diff**, decide **later** or **discard**. From scripts, use `yxu run "<goal>"`, then
 `yxu show <task>` and `yxu apply <task>`.
+
+## The team
+
+`yxu init` (and the built-in defaults) give you a team of subagents by role. Each one is mapped
+onto the agent CLIs you have: most roles on your main CLI, the expert roles on Claude when it is
+installed, and a backup on a second CLI.
+
+| agent | does | access |
+|---|---|---|
+| `scout` | discovery: finds the files, call sites and conventions for a question, with `file:line` | read-only |
+| `coder` | small, scoped changes; the default | edits |
+| `builder` | features and refactors across many files | edits |
+| `tester` | tests for new behavior, edge cases and regressions | edits |
+| `debugger` | reproduces a failure, finds the root cause, makes the smallest fix | edits |
+| `reviewer` | reviews a change or an area: bugs, security, missing tests, by severity | read-only |
+| `resolver` | resolves merge conflicts when parallel work is combined | edits |
+| `docs` | README, docs and changelog, matching the code | edits |
+| `expert` | escalation for the hardest problems | edits |
+| `backup` | coder on a second CLI, for rate limits and outages | edits |
+
+Each agent has a `description` (tells the orchestrator when to use it) and `instructions` (its
+role prompt, put before every task it gets). The workflows use the roles:
+
+```sh
+yxu run "add rate limiting to the API"                 # Claude leads the team
+yxu run -w feature "add rate limiting to the API"      # scout → plan → build in parallel → tests → verify → review
+yxu run -w bugfix "login fails when the email has a +" # debugger: failing test → root cause → fix → verify → review
+yxu run -w review "src/auth"                           # read-only review report
+yxu run -w explore "how does a request reach the DB?"  # read-only answer from the scout
+```
+
+Change the team to fit: any agent's model or CLI, its role, or add your own. In the interface:
+
+```
+/agent scout cli opencode opencode/deepseek-v4.1-flash-free   # move an agent to another CLI (provider)
+/agent builder model deepseek/deepseek-v4-pro                  # change its model
+/agent new security claude sonnet                              # add an agent…
+/agent security role Reviews auth and input handling for vulnerabilities
+/agent security instructions Report findings with path:line and a fix. Change nothing.
+/agent security permission plan                                # …read-only
+/agent remove docs
+/save                                                          # keep the changes (yxu.yaml; /save local: only you)
+```
+
+or in `yxu.yaml`, or with `yxu config set agents.scout.cli opencode --local`. `yxu init --template minimal`
+writes one coder per CLI instead.
 
 ## Configuration
 
@@ -78,8 +124,8 @@ an entry from a lower layer:
 # yxu.local.yaml: use OpenCode for the team's "coder" agent, just for me
 version: 1
 agents:
-  coder: { cli: opencode, model: opencode/deepseek-v4.1-flash-free }  # a new cli replaces the whole agent
-  heavy-coder: null                                                    # hide a team agent
+  coder: { cli: opencode, model: opencode/deepseek-v4.1-flash-free }  # a new cli: the old model goes, the role stays
+  docs: null                                                           # hide a team agent
 settings:
   concurrency: 5
 ```
@@ -196,7 +242,7 @@ ids, repo files, on/off. Commands also work while a run is going (changes apply 
 | `/help` `/status` `/new` `/clear` `/doctor` `/quit` | session |
 | `/workflow [name]` | switch workflow (auto or pipeline) |
 | `/model [opus\|sonnet\|haiku\|…]` `/effort [low…max\|default]` `/budget [usd\|off]` | the orchestrator |
-| `/agents` · `/agent <name> model\|timeout\|permission\|turns <value>` | each agent |
+| `/agents` · `/agent <name> model\|cli\|role\|instructions\|permission\|timeout\|turns <value>` · `/agent new <name> <cli> [model]` · `/agent remove <name>` | each agent |
 | `/models [agent\|cli] [search]` · `/models refresh` | browse every model each CLI offers |
 | `/concurrency [n]` `/resolver [agent\|off]` `/verify [command\|off]` | how agents run and are checked |
 | `/context …` `/compact …` | what the orchestrator sees; conversation compaction (below) |

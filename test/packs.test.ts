@@ -12,6 +12,7 @@ import { loadLayers } from "../src/config-layers.ts";
 import { packSchemaText } from "../src/config-schema.ts";
 import { git, YXU_IDENTITY } from "../src/git.ts";
 import { detectPacks, initYaml, KNOWN_AGENTS } from "../src/init.ts";
+import { PROVIDERS, teamYaml } from "../src/team.ts";
 import { addPack, packStatus, removePack, restorePacks, updatePacks, type PackIO } from "../src/pack-install.ts";
 import { lockPath, readLock } from "../src/packs.ts";
 import { prompt, SUBAGENT_PREAMBLE } from "../src/prompts.ts";
@@ -331,6 +332,28 @@ describe("init", () => {
     expect(loadLayers(root).config.workflows.feature!.steps!.map((s) => s.id)).toEqual(["plan", "implement", "verify", "review"]);
     const text = initYaml({ agents: [KNOWN_AGENTS[2]!] });
     expect(text).toContain("command: [gemini, --experimental-acp]");
+  });
+
+  test("the team template is valid for any set of CLIs, with roles where they belong", () => {
+    const P = (id: string) => PROVIDERS.find((p) => p.id === id)!;
+    for (const providers of [[P("commandcode")], [P("opencode"), P("claude")], [P("claude")], [P("gemini")], [P("commandcode"), P("opencode"), P("claude"), P("gemini")]]) {
+      for (const extra of [{ verify: "npm test" }, {}]) {
+        const cfg = parseConfig(teamYaml({ providers, ...extra }, "# x"), "yxu.yaml");
+        const names = Object.keys(cfg.agents);
+        expect(names.slice(0, 9)).toEqual(["scout", "coder", "builder", "tester", "debugger", "reviewer", "resolver", "docs", "expert"]);
+        expect(names.includes("backup")).toBe(providers.length > 1);
+        expect(cfg.agents.scout!.permission).toBe("plan");
+        expect(cfg.agents.reviewer!.permission).toBe("plan");
+        expect(cfg.agents.coder!.cli).toBe(providers[0]!.cli);
+        // Expert roles go to Claude when it is there.
+        expect(cfg.agents.expert!.cli).toBe(providers.some((p) => p.cli === "claude") ? "claude" : providers[0]!.cli);
+        expect(cfg.settings).toMatchObject({ resolver: "resolver", default_agent: "coder" });
+        expect(Object.keys(cfg.workflows)).toEqual(["default", "feature", "bugfix", "review", "explore"]);
+        expect(cfg.workflows.feature!.steps!.some((s) => s.type === "verify")).toBe(Boolean(extra.verify));
+        expect(cfg.workflows.default!.instructions).toContain(providers.length > 1 ? "`backup`" : "`expert`");
+        expect(cfg.workflows.default!.instructions!.includes("`backup`")).toBe(providers.length > 1);
+      }
+    }
   });
 
   test("starter packs are suggested from the files in the repo", () => {

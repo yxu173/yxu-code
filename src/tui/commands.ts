@@ -3,7 +3,7 @@
  * Every command is a thin layer over App methods; nothing here talks to agents directly.
  */
 import { spawnSync } from "node:child_process";
-import { parseDuration } from "../config.ts";
+import { agentRefs, parseDuration } from "../config.ts";
 import { tryGit } from "../git.ts";
 import { which } from "../platform.ts";
 import type { CliName } from "../types.ts";
@@ -78,6 +78,56 @@ function taskSuggestions(app: App, pendingOnly: boolean): Suggestion[] {
     .slice()
     .reverse()
     .map((t) => ({ value: t.taskId, label: t.taskId.slice(t.taskId.lastIndexOf("-") + 1), description: `${t.agent} · ${t.pending ? "pending" : t.state} · ${t.title}` }));
+}
+
+const AGENT_USAGE = "<name> <field> <value> | new <name> <cli> [model] | remove <name>";
+const AGENT_FIELDS: Suggestion[] = [
+  { value: "model", description: "model the agent's CLI uses" },
+  { value: "cli", description: "switch provider: commandcode | opencode | claude … [model]" },
+  { value: "role", description: "when the orchestrator should use it (its description)" },
+  { value: "instructions", description: "role prompt put before every task it gets" },
+  { value: "permission", description: "yolo | accept-edits | plan (read-only)" },
+  { value: "timeout", description: "e.g. 15m, 90s" },
+  { value: "turns", description: "max turns per task" },
+];
+
+/** CLIs an agent can be switched to or created with here (acp/generic need a command: yxu.yaml). */
+function switchableClis(app: App): string[] {
+  return ["commandcode", "opencode", "claude", ...(app.cfg.plugins ? [...app.cfg.plugins.agents.keys()] : [])];
+}
+
+function cliSuggestions(app: App): Suggestion[] {
+  const about: Record<string, string> = { commandcode: "Command Code (cmd)", opencode: "OpenCode", claude: "Claude Code" };
+  return switchableClis(app).map((c) => ({ value: c, description: about[c] ?? `from plugin ${app.cfg.plugins?.agents.get(c)?.plugin ?? ""}` }));
+}
+
+function warnUnknownModel(app: App, name: string, key: string, model: string) {
+  const known = app.catalog.get(key);
+  // Short names (e.g. "kimi-k2.5") are valid for some CLIs, so this only warns.
+  if (known.status === "ready" && known.models.length && !known.models.some((m) => m.id === model || m.id.endsWith(`/${model}`))) {
+    app.note(`${model} is not in the ${known.models.length} models ${keyLabel(key)} reported. If the agent fails, pick one with /agent ${name} model.`, "attention");
+  }
+}
+
+function newAgent(app: App, name: string | undefined, [cli, model]: string[]) {
+  if (!name || !cli) return app.fail("usage: /agent new <name> <cli> [model]", `clis: ${switchableClis(app).join(", ")}`);
+  if (!/^[a-z][a-z0-9-]*$/.test(name) || name === "new" || name === "remove") return app.fail(`"${name}" can't be an agent name`, "use a lowercase word, e.g. security-reviewer");
+  if (app.cfg.agents[name]) return app.fail(`agent "${name}" already exists`, `change it with /agent ${name} <field> <value>`);
+  if (!switchableClis(app).includes(cli)) return app.fail(`unknown cli "${cli}"`, `clis: ${switchableClis(app).join(", ")}; acp and generic agents need a command (edit yxu.yaml, see docs/AGENTS.md)`);
+  app.setConfig(["agents", name], { cli, ...(model ? { model } : {}) });
+  app.changed(`Added ${name} (${cli}${model ? ` · ${model}` : ""})`);
+  app.note(`Tell the orchestrator when to use it: \`/agent ${name} role <when>\`. Give it a role prompt: \`/agent ${name} instructions <text>\`. Make it read-only: \`/agent ${name} permission plan\`.`, "info");
+  void app.catalog.refresh(cli).catch(() => {});
+}
+
+function removeAgent(app: App, name: string | undefined) {
+  if (!name || !app.cfg.agents[name]) return app.fail(name ? `unknown agent "${name}"` : "usage: /agent remove <name>", "type /agents to list them");
+  const refs = agentRefs(app.cfg, name);
+  if (refs.length) return app.fail(`${name} is still used by ${refs.join("; ")}`, "point those at another agent first (e.g. /resolver <agent>), or edit yxu.yaml");
+  if (Object.keys(app.cfg.agents).length === 1) return app.fail("can't remove the last agent");
+  // null removes it from lower layers too (the built-in team, packs, your user config).
+  app.setConfig(["agents", name], undefined, null);
+  app.changed(`Removed ${name}`);
 }
 
 function agentSuggestions(app: App): Suggestion[] {
@@ -263,49 +313,75 @@ export const COMMANDS: Command[] = [
   },
   {
     name: "agent",
-    usage: "<name> <model|timeout|permission|turns> <value>",
-    description: "Change one agent's model, timeout, permission, or turn limit",
+    usage: "<name> <field> <value> | new <name> <cli> [model] | remove <name>",
+    description: "Change an agent (model, cli, role, instructions, timeout, permission, turns), add one, or remove one",
     group: "agents",
     needsArgs: true,
     searchDescriptions: true,
     complete: (app, i, before) => {
-      if (i === 0) return agentSuggestions(app);
-      if (i === 1)
+      if (i === 0)
         return [
-          { value: "model", description: "model the agent's CLI uses" },
-          { value: "timeout", description: "e.g. 15m, 90s" },
-          { value: "permission", description: "yolo | accept-edits | plan" },
-          { value: "turns", description: "max turns per task" },
+          ...agentSuggestions(app),
+          { value: "new", description: "add an agent: /agent new <name> <cli> [model]" },
+          { value: "remove", description: "remove an agent" },
         ];
+      if (before[0] === "new") {
+        if (i === 2) return cliSuggestions(app);
+        if (i === 3) return modelSuggestions(app, before[2] ?? "");
+        return [];
+      }
+      if (before[0] === "remove") return i === 1 ? agentSuggestions(app) : [];
+      const agent = app.cfg.agents[before[0] ?? ""];
+      if (i === 1) return AGENT_FIELDS;
       if (i === 2 && before[1] === "permission")
         return [
           { value: "yolo", description: "no prompts (runs in its own worktree)" },
           { value: "accept-edits", description: "edits only" },
-          { value: "plan", description: "read-only" },
+          { value: "plan", description: "read-only: reports, changes nothing" },
         ];
-      if (i === 2 && before[1] === "model") {
-        const agent = app.cfg.agents[before[0] ?? ""];
-        return agent ? modelSuggestions(app, catalogKey(agent), agent.model) : [];
-      }
+      if (i === 2 && before[1] === "model") return agent ? modelSuggestions(app, catalogKey(agent), agent.model) : [];
+      if (i === 2 && before[1] === "cli") return cliSuggestions(app);
+      if (i === 3 && before[1] === "cli") return modelSuggestions(app, before[2] ?? "");
       if (i === 2 && before[1] === "timeout") return ["5m", "15m", "30m", "1h"].map((v) => ({ value: v }));
+      if (i === 2 && (before[1] === "role" || before[1] === "instructions")) return [{ value: "clear", description: `remove the ${before[1]}` }];
       return [];
     },
     run: (app, [name, field, ...rest]) => {
       const value = rest.join(" ").trim();
+      if (name === "new") return newAgent(app, field, rest);
+      if (name === "remove") return removeAgent(app, field);
       const agent = name ? app.cfg.agents[name] : undefined;
-      if (!agent) return app.fail(name ? `unknown agent "${name}"` : "usage: /agent <name> <model|timeout|permission|turns> <value>", "type /agents to list them");
+      if (!agent) return app.fail(name ? `unknown agent "${name}"` : `usage: /agent ${AGENT_USAGE}`, "type /agents to list them, or /agent new <name> <cli> to add one");
       switch (field) {
         case "model": {
           if (!value) return app.fail("usage: /agent <name> model <model>");
-          const known = app.catalog.get(catalogKey(agent));
           app.setConfig(["agents", name!, "model"], value);
           app.changed(`${name} now uses ${value}`);
-          // Short names (e.g. "kimi-k2.5") are valid for some CLIs, so this only warns.
-          if (known.status === "ready" && known.models.length && !known.models.some((m) => m.id === value || m.id.endsWith(`/${value}`))) {
-            app.note(`${value} is not in the ${known.models.length} models ${agent.cli} reported. If the agent fails, pick one with /agent ${name} model.`, "attention");
-          }
+          warnUnknownModel(app, name!, catalogKey(agent), value);
           return;
         }
+        case "cli": {
+          const [cli, model] = rest;
+          if (!cli) return app.fail("usage: /agent <name> cli <cli> [model]", `clis: ${switchableClis(app).join(", ")}`);
+          if (!switchableClis(app).includes(cli)) return app.fail(`can't switch to cli "${cli}" here`, `clis: ${switchableClis(app).join(", ")}; acp and generic agents need a command (edit yxu.yaml, see docs/AGENTS.md)`);
+          if (agent.command) return app.fail(`${name} is an ${agent.cli} agent with a command`, "change it in yxu.yaml");
+          app.setConfig(["agents", name!, "cli"], cli);
+          // Model ids differ between CLIs: keep the given one, else the CLI's default.
+          app.setConfig(["agents", name!, "model"], model, model ?? null);
+          app.changed(`${name} now runs on ${cli}${model ? ` with ${model}` : " (its default model; set one with /agent " + name + " model)"}`);
+          if (model) warnUnknownModel(app, name!, cli, model);
+          void app.catalog.refresh(cli).catch(() => {});
+          return;
+        }
+        case "role":
+        case "description":
+          if (!value) return app.fail(`usage: /agent <name> role <when the orchestrator should use it> | clear`);
+          app.setConfig(["agents", name!, "description"], value === "clear" ? undefined : value, value === "clear" ? null : value);
+          return app.changed(value === "clear" ? `${name} has no role description` : `${name}'s role: ${value}`);
+        case "instructions":
+          if (!value) return app.note(agent.instructions ? `**${name}** instructions:\n\n${agent.instructions}` : `${name} has no instructions. Set them with /agent ${name} instructions <text>.`);
+          app.setConfig(["agents", name!, "instructions"], value === "clear" ? undefined : value, value === "clear" ? null : value);
+          return app.changed(value === "clear" ? `${name} has no instructions` : `${name}'s instructions updated`);
         case "timeout": {
           let ms: number;
           try {
@@ -319,7 +395,7 @@ export const COMMANDS: Command[] = [
         case "permission":
           if (!["yolo", "accept-edits", "plan"].includes(value)) return app.fail("usage: /agent <name> permission yolo|accept-edits|plan");
           app.setConfig(["agents", name!, "permission"], value);
-          return app.changed(`${name} permission ${value}`);
+          return app.changed(`${name} permission ${value}${value === "plan" ? " (read-only)" : ""}`);
         case "turns": {
           const n = Number(value);
           if (!(Number.isInteger(n) && n > 0)) return app.fail("usage: /agent <name> turns <n>");
@@ -327,7 +403,7 @@ export const COMMANDS: Command[] = [
           return app.changed(`${name} max turns ${n}`);
         }
         default:
-          return app.fail("usage: /agent <name> <model|timeout|permission|turns> <value>");
+          return app.fail(`usage: /agent ${AGENT_USAGE}`, `fields: ${AGENT_FIELDS.map((f) => f.value).join(", ")}`);
       }
     },
   },
@@ -618,7 +694,9 @@ export function paletteFor(app: App, text: string): PaletteState | undefined {
   const modelCli =
     cmd.name === "model" && before.length === 0
       ? "claude"
-      : cmd.name === "agent" && before.length === 2 && before[1] === "model"
+      : cmd.name === "agent" && ((before.length === 3 && before[1] === "cli") || (before.length === 3 && before[0] === "new"))
+        ? before[2]
+        : cmd.name === "agent" && before.length === 2 && before[1] === "model"
         ? (() => {
             const a = app.cfg.agents[before[0] ?? ""];
             return a ? catalogKey(a) : undefined;
