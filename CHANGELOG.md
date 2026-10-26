@@ -3,7 +3,7 @@
 All notable changes are listed here. The project uses [semantic versioning](https://semver.org);
 before 1.0, minor versions may change the config format (with migration notes here).
 
-## Unreleased
+## 0.1.1 (2026-10-26)
 
 ### Added
 - A starter team by role: `scout` (read-only discovery), `coder`, `builder`, `tester`, `debugger`,

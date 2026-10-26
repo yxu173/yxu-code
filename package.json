@@ -6,7 +6,7 @@
     "type": "git",
     "url": "git+https://github.com/yxu173/yxu-code.git"
   },
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local multi-agent orchestrator: Claude Code plans, local coding agents do the work",
   "type": "module",
   "bin": {
