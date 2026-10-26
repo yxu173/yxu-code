@@ -20,8 +20,11 @@ before 1.0, minor versions may change the config format (with migration notes he
   summarized while subagents work and the run hands over to it; between turns, the interface
   summarizes while you keep working. Summaries are never thrown away: turns that ran meanwhile are
   passed on with them. `/compact background on|off|<n%>`.
-- `yxu run -c` (`--continue`) continues the repo's last conversation; after a run, it is summarized
-  in a detached process for the next one.
+- Sessions: every conversation is saved per user (`~/.local/share/yxu/sessions`) with its repo,
+  folder, turns, memory and tasks. `yxu sessions [--all|--here]` lists them (every repo's, grouped),
+  `yxu resume [id]` reopens one from any folder with its pending results, `yxu -c` continues this
+  repo's latest, `yxu run -c` / `-s <id>` continue one from scripts. Interface: `/sessions`,
+  `/resume`, `/rename`. A continued session is summarized in a detached process after a run.
 - From issue to pull request: `yxu run --issue 123` (or `linear:ENG-12` from a plugin issue source)
   makes the issue the goal; `yxu pr <task>` pushes a task and opens a PR describing what each agent
   did, the checks and the review findings, closing the issue; `yxu fix-ci <pr>` has the debugger fix
@@ -34,7 +37,7 @@ before 1.0, minor versions may change the config format (with migration notes he
   paths relative to the repository.
 - Watch an agent and step in: `/watch` shows a running agent's tool calls and diff live in a wider
   side panel; `/tell` sends it a correction mid-task (it resumes its own session when the CLI can,
-  keeping its work); `/pause` and `/resume` (the timeout pauses too); `/takeover` stops it and
+  keeping its work); `/pause` and `/continue` (the timeout pauses too); `/takeover` stops it and
   opens its worktree in your editor, `/done` hands the result back to the orchestrator.
   Subagent output is now read as it arrives, so tool calls show live in `yxu run` too.
 - The Claude subagent adapter uses `--output-format stream-json` (live tool calls) and reads the

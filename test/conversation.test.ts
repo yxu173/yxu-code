@@ -1,8 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { Conversation, loadConversation, saveConversation, sincePreamble } from "../src/conversation.ts";
+import { Conversation, sincePreamble } from "../src/conversation.ts";
 import { worthCompacting } from "../src/context.ts";
 
 describe("conversation", () => {
@@ -45,16 +42,6 @@ describe("conversation", () => {
     expect(p.length).toBeLessThan(42_000);
     expect(p).toContain("(earlier details omitted)");
     expect(p).toContain("You answered: yyyy");
-  });
-
-  test("saved and loaded whole", () => {
-    const root = mkdtempSync(join(tmpdir(), "yxu-conv-"));
-    expect(loadConversation(root)).toBeUndefined();
-    const c = new Conversation();
-    c.finish({ goal: "a", finalText: "A", sessionId: "s1", usedSummary: false });
-    saveConversation(root, c);
-    expect(loadConversation(root)!.state).toEqual(c.state);
-    rmSync(root, { recursive: true, force: true });
   });
 
   test("a summary is only worth making when the conversation itself is a real part of the window", () => {

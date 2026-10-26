@@ -11,7 +11,8 @@ import { branchFor, repoRoot, tryGit } from "./git.ts";
 import { Session, TaskOps } from "./ops.ts";
 import { runPipeline } from "./orchestrator/pipeline.ts";
 import { compactConversation, orchestratorPrompt, runOrchestrator, sessionPath, type OrchestratorRender, type RunOutcome } from "./orchestrator/run.ts";
-import { Conversation, loadConversation, saveConversation } from "./conversation.ts";
+import { Conversation } from "./conversation.ts";
+import { deleteSession, describe as describeSession, findSession, listSessions, newSession, renameSession, saveSession, tildePath, titleFrom, type SessionFile } from "./sessions.ts";
 import { issueGoal, resolveIssue, type Issue } from "./github.ts";
 import { defaultBase, draftPr, openPr, recentTasks, tagIssue, tagRun } from "./pr.ts";
 import { fixCi } from "./fix-ci.ts";
@@ -38,8 +39,14 @@ Usage:
   yxu run "<goal>" [-w workflow] [--model M] [--budget USD] [-i name=value]... [--yes] [-c]
                             Claude (Opus) plans and delegates to your local agents;
                             pipelines take --input values, --yes approves their gates;
-                            -c (--continue) continues the last conversation in this repo;
+                            -c (--continue) continues this repo's latest session,
+                            -s <id> (--session) a given one;
                             --issue 123|owner/repo#123|URL|linear:ENG-12 works on an issue
+  yxu sessions [--all|--here] [--json] | rm <id> | rename <id> <title>
+                            saved sessions: this repo's, every repo's, or this folder's
+  yxu resume [id|last] [--all]
+                            reopen a session from any folder: its conversation and pending
+                            results (no id: pick from a list); yxu -c continues this repo's latest
   yxu map [words]           the repo map shared with every agent: overview, or what it finds
   yxu pr [task] [--title T] [--base B] [--branch name] [--draft] [--dry-run]
                             push a task's branch and open a pull request: what each agent
@@ -196,9 +203,19 @@ async function tui(argv: string[]) {
       "no-color": { type: "boolean" },
       demo: { type: "boolean" },
       set: { type: "string", multiple: true },
+      continue: { type: "boolean", short: "c" },
+      resume: { type: "string", short: "r" },
     },
   });
   const root = repoRoot(process.cwd());
+  let resume: SessionFile | undefined;
+  try {
+    if (values.resume) resume = findSession(values.resume, root);
+    else if (values.continue) resume = listSessions({ root })[0] ?? die("no sessions in this repository yet; start one with `yxu`");
+  } catch (e) {
+    die((e as Error).message);
+  }
+  if (resume && resume.root !== root) die(`session ${resume.id} belongs to ${tildePath(resume.root)}: \`yxu resume ${resume.id}\` switches there`);
   const cfg = loadConfig(root, { sets: values.set });
   getWorkflow(cfg, values.workflow); // validate before taking over the screen
   const { runTui } = await import("./tui/index.ts");
@@ -208,6 +225,8 @@ async function tui(argv: string[]) {
     workflow: values.workflow,
     demo: values.demo,
     sets: values.set,
+    resume,
+    folder: process.cwd(),
     ascii: values.ascii || undefined,
     reducedMotion: values["reduced-motion"] || undefined,
     depth: values["no-color"] ? "none" : undefined,
@@ -228,6 +247,7 @@ async function run(argv: string[]) {
       input: { type: "string", short: "i", multiple: true },
       yes: { type: "boolean", short: "y" },
       continue: { type: "boolean", short: "c" },
+      session: { type: "string", short: "s" },
       issue: { type: "string" },
     },
   });
@@ -308,11 +328,22 @@ async function run(argv: string[]) {
 
     const r = makeRenderer(cfg);
     const session = new Session();
-    // Auto runs are remembered in .yxu/conversation.json; --continue picks the last one up.
+    // Every run is a session (yxu sessions); -c continues this repo's latest, --session a given one.
     const auto = workflow.mode === "auto";
-    const conv = (values.continue && loadConversation(root)) || new Conversation();
-    if (values.continue && !conv.sessionId) console.log(dim("(no earlier conversation in this repo: starting a new one)\n"));
-    const next = auto && values.continue ? conv.next() : { usesSummary: false };
+    let saved: SessionFile | undefined;
+    if (values.session) {
+      try {
+        saved = findSession(values.session, root);
+      } catch (e) {
+        die((e as Error).message);
+      }
+      if (saved.root !== root) die(`session ${saved.id} belongs to ${tildePath(saved.root)}; run it there, or \`yxu resume ${saved.id}\``);
+    } else if (values.continue) saved = listSessions({ root })[0];
+    if (values.continue && !saved) console.log(dim("(no earlier session in this repo: starting a new one)\n"));
+    if (saved) console.log(dim(`(session ${saved.id}: ${saved.title})\n`));
+    const conv = new Conversation(saved?.conversation);
+    const file = saved ?? newSession(root, process.cwd(), conv.state);
+    const next = auto && saved ? conv.next() : { usesSummary: false };
     if (next.usesSummary) console.log(dim("(continuing from a background summary of the conversation)\n"));
     const outcome = await withRunHooks(cfg, root, { goal, workflow: workflow.name, session, signal: ac.signal }, () =>
       workflow.mode === "pipeline"
@@ -321,7 +352,7 @@ async function run(argv: string[]) {
     );
     if (issue) tagIssue(root, outcome.session.tasks.keys(), issue);
     if (outcome.ok) tagRun(root, outcome.session.tasks.keys(), { goal: issue ? `${issue.title} (${issue.id})` : goal, report: outcome.finalText });
-    if (auto && !outcome.cancelled) await rememberConversation(root, cfg, conv, { goal, outcome, usedSummary: next.usesSummary, continuing: Boolean(values.continue) });
+    if (!outcome.cancelled) await rememberSession(root, cfg, conv, file, { goal: issue ? `${issue.title} (${issue.id})` : goal, outcome, auto, workflow: workflow.name, usedSummary: next.usesSummary, continuing: Boolean(saved) });
 
     // The final report is usually the last assistant message, already printed above.
     if (outcome.finalText.trim() !== r.lastText()) console.log(`${bold("─── result ───")}\n${outcome.finalText}\n`);
@@ -336,43 +367,125 @@ async function run(argv: string[]) {
 }
 
 /**
- * After an auto run: save the conversation for `yxu run --continue`, keep a summary made during the
- * run, and if the window is filling, summarize it in a detached process (the shell is not held).
+ * After a run: save it as a session (yxu sessions, yxu resume, yxu run -c), keep a summary made
+ * during the run, and if the window is filling, summarize it in a detached process (the shell is
+ * not held). Only continued sessions are summarized afterwards: a one-off run's would go unused.
  */
-async function rememberConversation(root: string, cfg: Config, conv: Conversation, t: { goal: string; outcome: RunOutcome; usedSummary: boolean; continuing: boolean }) {
-  const disk = loadConversation(root);
-  // A summary finished by a detached process during this run belongs to this conversation too.
-  if (disk?.state.id === conv.state.id && disk.summary && !conv.summary && !t.usedSummary) conv.state.summary = disk.summary;
-  conv.finish({ goal: t.goal, finalText: t.outcome.finalText, sessionId: t.outcome.sdkSessionId, usedSummary: t.usedSummary });
+async function rememberSession(
+  root: string,
+  cfg: Config,
+  conv: Conversation,
+  file: SessionFile,
+  t: { goal: string; outcome: RunOutcome; auto: boolean; workflow: string; usedSummary: boolean; continuing: boolean },
+) {
+  // A summary finished by a detached process during this run belongs to this session too.
+  const disk = (() => {
+    try {
+      return findSession(file.id);
+    } catch {
+      return undefined;
+    }
+  })();
+  if (disk?.conversation.summary && !conv.summary && !t.usedSummary) conv.state.summary = disk.conversation.summary;
+  if (t.auto) conv.finish({ goal: t.goal, finalText: t.outcome.finalText, sessionId: t.outcome.sdkSessionId, usedSummary: t.usedSummary });
   const left = t.outcome.backgroundSummary;
   if (left && !conv.summary && t.continuing) {
     // Started near the end of the run: usually seconds from done. Ctrl-C skips it.
-    console.log(dim("finishing the background summary for `yxu run -c`… (Ctrl-C skips)"));
+    console.log(dim("finishing the background summary for the next turn… (Ctrl-C skips)"));
     const done = await left.done;
     if (done?.sessionId) conv.adopt(conv.state.id, { sessionId: done.sessionId, afterTurn: conv.turn, tail: left.tail || undefined, preTokens: done.compaction?.preTokens, postTokens: done.compaction?.postTokens });
   }
-  saveConversation(root, conv);
+  file.conversation = conv.state;
+  file.title ||= titleFrom(t.goal);
+  file.workflow = t.workflow;
+  file.tasks.push(...[...t.outcome.session.tasks.keys()].filter((id) => !file.tasks.includes(id)));
+  file.costUsd += t.outcome.costUsd;
+  file.branch = tryGit(root, "branch", "--show-current").out || undefined;
+  saveSession(file);
+  console.log(dim(`session ${file.id} · continue: yxu run -c "…" · yxu resume ${file.id}`));
   const k = cfg.compact;
   const u = t.outcome.context;
-  // Only for conversations being continued (-c): a summary of a one-off run would go unused.
-  if (t.continuing && !conv.summary && conv.sessionId && k.auto && k.background && u && worthCompacting(u, k)) {
+  if (t.auto && t.continuing && !conv.summary && conv.sessionId && k.auto && k.background && u && worthCompacting(u, k)) {
     const [cmd, ...args] = selfCommand();
-    const child = spawn(cmd!, [...args, "__summarize", conv.state.id, conv.sessionId, String(conv.turn)], { cwd: root, detached: true, stdio: "ignore" });
+    const child = spawn(cmd!, [...args, "__summarize", file.id, conv.sessionId, String(conv.turn)], { cwd: root, detached: true, stdio: "ignore" });
     child.unref();
-    console.log(dim(`context ${Math.round(u.percentage)}%: summarizing it in the background for the next \`yxu run -c\``));
+    console.log(dim(`context ${Math.round(u.percentage)}%: summarizing it in the background for the next turn`));
   }
 }
 
-/** `yxu __summarize <conversation> <session> <turn>`: the detached half of rememberConversation. */
-async function summarizeDetached([convId, sessionId, turn]: string[]) {
+/** `yxu __summarize <session> <claude session> <turn>`: the detached half of rememberSession. */
+async function summarizeDetached([id, sessionId, turn]: string[]) {
   const root = repoRoot(process.cwd());
   const cfg = loadConfig(root);
   const r = await compactConversation({ cfg, root, sessionId: sessionId!, abort: new AbortController(), fork: true });
   if (!r.ok || !r.sessionId) return;
-  const conv = loadConversation(root);
-  // Only if the conversation is still the one summarized and no other summary arrived first.
-  if (!conv || conv.summary || !conv.adopt(convId!, { sessionId: r.sessionId, afterTurn: Number(turn), preTokens: r.compaction?.preTokens, postTokens: r.compaction?.postTokens })) return;
-  saveConversation(root, conv);
+  const file = findSession(id!);
+  const conv = new Conversation(file.conversation);
+  // Only if no other summary arrived first.
+  if (conv.summary || !conv.adopt(conv.state.id, { sessionId: r.sessionId, afterTurn: Number(turn), preTokens: r.compaction?.preTokens, postTokens: r.compaction?.postTokens })) return;
+  file.conversation = conv.state;
+  saveSession(file);
+}
+
+/** `yxu sessions [--all|--here] [--json]`, `yxu sessions rm <id>`, `yxu sessions rename <id> <title>`. */
+async function sessionsCommand(argv: string[]) {
+  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { all: { type: "boolean", short: "a" }, here: { type: "boolean" }, json: { type: "boolean" } } });
+  const [sub, id, ...rest] = positionals;
+  if (sub === "rm" || sub === "delete") {
+    const s = findSession(id ?? die("usage: yxu sessions rm <id>"));
+    deleteSession(s.id);
+    return console.log(`✓ deleted session ${s.id} (${s.title}); its tasks and branches are untouched`);
+  }
+  if (sub === "rename") {
+    renameSession(id ?? die("usage: yxu sessions rename <id> <title>"), rest.join(" ") || die("usage: yxu sessions rename <id> <title>"));
+    return console.log("✓ renamed");
+  }
+  if (sub) die(`unknown: yxu sessions ${sub} (try: yxu sessions [--all|--here], rm <id>, rename <id> <title>)`);
+  const root = tryGit(process.cwd(), "rev-parse", "--show-toplevel");
+  const all = values.all || !root.ok;
+  const list = listSessions(all ? {} : values.here ? { root: root.out, folder: process.cwd() } : { root: root.out });
+  if (values.json) return console.log(JSON.stringify(list.map(({ conversation, ...m }) => ({ ...m, turns: conversation.turn })), null, 2));
+  if (!list.length) return console.log(all ? "No sessions yet." : "No sessions in this repository yet. `yxu sessions --all` lists every repository's.");
+  if (all) {
+    // Grouped by repository, most recently used first.
+    const byRoot = new Map<string, SessionFile[]>();
+    for (const s of list) byRoot.set(s.root, [...(byRoot.get(s.root) ?? []), s]);
+    for (const [r, ss] of byRoot) {
+      console.log(bold(tildePath(r)));
+      for (const s of ss.slice(0, 15)) console.log(`  ${describeSession(s, false)}`);
+      if (ss.length > 15) console.log(dim(`  … ${ss.length - 15} more`));
+    }
+  } else for (const s of list.slice(0, 40)) console.log(describeSession(s, false));
+  console.log(dim(`\nresume: yxu resume <id>  (from any folder) · continue here: yxu -c · yxu run -c "<goal>"`));
+}
+
+/** `yxu resume [id|last] [--all]`: open the interface on a saved session, in its repository. */
+async function resumeCommand(argv: string[]) {
+  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { all: { type: "boolean", short: "a" }, set: { type: "string", multiple: true } } });
+  let s: SessionFile | undefined;
+  const here = tryGit(process.cwd(), "rev-parse", "--show-toplevel");
+  if (positionals[0]) {
+    try {
+      s = findSession(positionals[0], here.ok ? here.out : undefined);
+    } catch (e) {
+      die((e as Error).message);
+    }
+  } else {
+    // Pick one: this repo's (or every repo's outside a repo / with --all).
+    const list = listSessions(values.all || !here.ok ? {} : { root: here.out }).slice(0, 20);
+    if (!list.length) die(here.ok && !values.all ? "no sessions in this repository yet (yxu resume --all for every repository's)" : "no sessions yet");
+    list.forEach((x, i) => console.log(`${String(i + 1).padStart(2)}. ${describeSession(x, values.all || !here.ok)}`));
+    if (!process.stdin.isTTY) die("name a session: yxu resume <id>");
+    const { createInterface } = await import("node:readline/promises");
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const a = (await rl.question(`resume which? ${dim("[1]")} `)).trim();
+    rl.close();
+    s = list[(Number(a) || 1) - 1] ?? die("no such number");
+  }
+  if (!existsSync(s.root)) die(`the repository of session ${s.id} is gone: ${s.root}`);
+  // Claude keeps its conversations per directory: continue where the session ran.
+  process.chdir(existsSync(s.folder) ? s.folder : s.root);
+  await tui(["--resume", s.id, ...(values.set ?? []).flatMap((x) => ["--set", x])]);
 }
 
 /** Agent tool approvals on the command line: a terminal asks; without one, they are refused. */
@@ -891,6 +1004,12 @@ try {
     }
     case "fix-ci":
       await fixCiCommand(rest);
+      break;
+    case "sessions":
+      await sessionsCommand(rest);
+      break;
+    case "resume":
+      await resumeCommand(rest);
       break;
     case "__summarize":
       await summarizeDetached(rest);

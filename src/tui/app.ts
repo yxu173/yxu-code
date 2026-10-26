@@ -16,6 +16,7 @@ import { branchFor, excludeYxuDir, tryGit } from "../git.ts";
 import { Session } from "../ops.ts";
 import { runPipeline } from "../orchestrator/pipeline.ts";
 import { Conversation } from "../conversation.ts";
+import { ago, describe as describeSession, findSession, listSessions, newSession, restoreTasks, saveSession, tildePath, titleFrom, type SessionFile } from "../sessions.ts";
 import { liveTask, liveTasks, onLiveChange, type LiveControl } from "../runner.ts";
 import { buildRepoMap, loadRepoMap, mapSlice, overviewText, type RepoMap } from "../repomap.ts";
 import { fixCi, type FixCiOptions, type FixCiResult } from "../fix-ci.ts";
@@ -135,6 +136,10 @@ export interface AppOptions {
   catalog?: ModelCatalog;
   /** --set overrides the config was loaded with. */
   sets?: string[];
+  /** A saved session to continue (yxu resume, yxu -c). */
+  resume?: SessionFile;
+  /** Where yxu was started (default: the repo root). Recorded with the session. */
+  folder?: string;
 }
 
 const READ_TOOLS = new Set(["Read", "Grep", "Glob"]);
@@ -148,6 +153,8 @@ export class App {
   private session = new Session();
   /** The remembered orchestrator conversation, and summaries made of it in the background. */
   private conv = new Conversation();
+  /** This session as saved in ~/.local/share/yxu/sessions (after each turn). */
+  private saved!: SessionFile;
   private get sdkSessionId(): string | undefined {
     return this.conv.sessionId;
   }
@@ -189,6 +196,8 @@ export class App {
     this.editor = new Editor(this.loadHistory());
     this.store.subscribe(() => this.requestRender());
     if (!o.demo) this.refreshMap();
+    this.saved = newSession(o.root, o.folder ?? o.root, this.conv.state);
+    if (o.resume) this.openSession(o.resume);
     const ui = this.cfg.ui;
     this.store.set({ panelOpen: ui.panel, layout: { sections: ui.panel_sections, footer: ui.footer } });
     try {
@@ -734,6 +743,7 @@ export class App {
   resetConversation() {
     this.stopBackgroundCompaction();
     this.conv.reset();
+    this.saved = newSession(this.o.root, this.o.folder ?? this.o.root, this.conv.state);
     this.store.set({ remembering: false });
   }
 
@@ -998,6 +1008,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     if (r) s.state.cost.orchestrator += r.costUsd;
     if (r?.ok && r.compaction) {
       this.conv.compactedInPlace();
+      this.persist();
       const c = r.compaction;
       s.update(act, { state: "ok", meta: `${formatTokens(c.preTokens)}${c.postTokens !== undefined ? ` → ${formatTokens(c.postTokens)}` : ""} tokens` });
       this.settle();
@@ -1053,6 +1064,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
       if (job.abort.signal.aborted || !r?.sessionId || !r.compaction) return;
       const c = r.compaction;
       if (!this.conv.adopt(convId, { sessionId: r.sessionId, afterTurn, tail, preTokens: c.preTokens, postTokens: c.postTokens })) return;
+      this.persist();
       const since = this.conv.turnsSince(this.conv.summary!).length;
       if (!since && !tail && r.context) this.store.set({ usage: r.context });
       this.warned = 0;
@@ -1400,6 +1412,12 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     this.syncTasks();
     try {
       const made = [...this.session.tasks.keys()].filter((id) => !before.has(id));
+      // Every run is part of the session (pipelines too: their tasks), not only conversation turns.
+      this.saved.tasks.push(...made.filter((id) => !this.saved.tasks.includes(id)));
+      if (!this.saved.title) this.saved.title = titleFrom(issue ? `${issue.title} (${issue.id})` : goal);
+      this.saved.workflow = wf.name;
+      if (outcome) this.saved.costUsd += outcome.costUsd;
+      this.persist();
       if (issue) tagIssue(this.o.root, made, issue);
       if (outcome?.ok) tagRun(this.o.root, made, { goal: issue ? `${issue.title} (${issue.id})` : goal, report: outcome.finalText });
     } catch {
@@ -1413,6 +1431,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
       s.state.cost.orchestrator += outcome.costUsd;
       if (remember) {
         this.conv.finish({ goal, finalText: outcome.finalText, sessionId: outcome.sdkSessionId, usedSummary: next.usesSummary });
+        this.persist();
         if (outcome.sdkSessionId) s.set({ remembering: true });
         // A summary the run started but didn't get to use serves the next turn.
         if (outcome.backgroundSummary && !this.bgCompact && !this.conv.summary) this.adoptSummary(outcome.backgroundSummary.done, this.conv.turn, outcome.backgroundSummary.tail || undefined);
@@ -1892,7 +1911,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     const err = kind === "pause" ? target.pause() : kind === "resume" ? target.resume() : kind === "takeover" ? target.takeOver() : target.done();
     if (err) return this.fail(`can't ${kind === "takeover" ? "take over" : kind} ${target.agent}: ${err}`);
     const id = shortTask(target.taskId);
-    if (kind === "pause") this.note(`Paused ${target.agent} (${id}); its timeout is paused too. /resume continues.`, "info");
+    if (kind === "pause") this.note(`Paused ${target.agent} (${id}); its timeout is paused too. /continue lets it go on.`, "info");
     if (kind === "resume") this.note(`${target.agent} (${id}) continues.`, "info");
     if (kind === "done") this.note(`Handed ${id} back: your edits and the agent's are collected as the task's result.`, "ok");
     if (kind === "takeover") {
@@ -1904,6 +1923,79 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     }
     if (!this.store.state.watch) this.watchCommand(target.taskId);
     else this.refreshWatch(target.taskId);
+  }
+
+  // ── sessions ──────────────────────────────────────────────────────────────
+
+  /** Save this session (no-op until its first turn). */
+  private persist() {
+    if (this.o.demo) return;
+    this.saved.conversation = this.conv.state;
+    this.saved.branch = tryGit(this.o.root, "branch", "--show-current").out || undefined;
+    try {
+      saveSession(this.saved);
+    } catch (e) {
+      this.flash(`couldn't save the session: ${(e as Error).message}`, 3000);
+    }
+  }
+
+  /** Continue a saved session: its conversation, its pending tasks, and its turns on screen. */
+  private openSession(s: SessionFile) {
+    this.conv = new Conversation(s.conversation);
+    this.saved = s;
+    this.session = new Session();
+    restoreTasks(s, this.session);
+    this.syncTasks();
+    const s0 = this.store;
+    s0.set({ turn: s.conversation.turn, remembering: Boolean(s.conversation.sessionId), usage: undefined });
+    s0.add({ kind: "divider", label: `resumed · ${s.title} · ${ago(s.updatedAt)}` });
+    const shown = s.conversation.log.slice(-6);
+    if (s.conversation.turn > shown.length) s0.add({ kind: "notice", tone: "info", text: `${s.conversation.turn - shown.length} earlier turn(s) not shown; the orchestrator remembers them.` });
+    for (const t of shown) {
+      s0.add({ kind: "user", text: t.goal, time: new Date(s.updatedAt) });
+      if (t.finalText.trim()) s0.add({ kind: "assistant", text: t.finalText, streaming: false });
+    }
+    const pending = this.session.pending().length;
+    s0.add({
+      kind: "notice",
+      tone: "memory",
+      text: `Session ${s.id} resumed: the next message continues the conversation${s.conversation.summary ? " (from its background summary)" : ""}.${pending ? ` ${pending} result(s) still pending: /tasks.` : ""}`,
+    });
+  }
+
+  /** `/sessions [all|here]`: this repo's sessions (or every repo's, or this folder's). */
+  listSessionsCommand(arg = "") {
+    const all = arg === "all";
+    const list = listSessions(all ? {} : arg === "here" ? { root: this.o.root, folder: this.o.folder ?? this.o.root } : { root: this.o.root });
+    if (!list.length) return this.note(all ? "No sessions yet." : "No sessions in this repository yet. `/sessions all` lists every repository's.", "info");
+    const rows = list.slice(0, 25).map((s) => `- ${s.id === this.saved.id ? "▸ " : ""}\`${s.id}\` ${describeSession(s, all).slice(s.id.length + 2)}`);
+    this.note([`**Sessions**${all ? " (all repositories)" : arg === "here" ? " (this folder)" : ""}`, ...rows, list.length > 25 ? `- … ${list.length - 25} more` : "", "", "`/resume <id>` continues one here; sessions of other repositories: `yxu resume <id>` from anywhere."].filter((l, i, a) => l || i === a.length - 2).join("\n"));
+  }
+
+  /** `/resume <id|last>`: switch to a saved session of this repository. */
+  resumeCommand(ref = "") {
+    const st = this.store.state;
+    if (st.status === "working" || st.status === "cancelling") return this.flash("an operation is running — resume after it finishes", 2500);
+    let s: SessionFile;
+    try {
+      s = findSession(ref || "last", this.o.root);
+    } catch (e) {
+      return this.fail((e as Error).message, "/sessions lists them");
+    }
+    if (s.root !== this.o.root) return this.fail(`session ${s.id} belongs to ${tildePath(s.root)}`, `run \`yxu resume ${s.id}\` (it switches there)`);
+    if (s.id === this.saved.id) return this.note("That is this session.", "info");
+    this.stopBackgroundCompaction();
+    this.persist();
+    this.clearView();
+    this.openSession(s);
+  }
+
+  /** `/rename <title>` for this session. */
+  renameSession(title: string) {
+    if (!title.trim()) return this.note(`This session: ${this.saved.title || "(untitled until its first message)"} · ${this.saved.id}`);
+    this.saved.title = titleFrom(title);
+    this.persist();
+    this.note(`Session renamed: ${this.saved.title}`, "ok");
   }
 
   private mapping?: Promise<RepoMap | undefined>;
