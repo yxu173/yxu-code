@@ -218,8 +218,13 @@ const ContextSchema = z
     notes: z.string().optional(),
     /** Max characters of a subagent's diff shown to the orchestrator (overrides settings.max_diff_chars). */
     max_diff_chars: z.number().int().positive().optional(),
+    repo_map: z
+      .boolean()
+      .default(true)
+      .describe("Share a map of the repo (files, symbols, tests, conventions) with every agent: the relevant part goes before each task, the overview to the orchestrator"),
+    repo_map_chars: z.number().int().min(500).max(50_000).default(4000).describe("Characters of the repo map put before each subagent task"),
   })
-  .default({ memory: true, project_instructions: true, include: [], include_max_chars: 20_000 });
+  .default({ memory: true, project_instructions: true, include: [], include_max_chars: 20_000, repo_map: true, repo_map_chars: 4000 });
 
 /** How long orchestrator conversations are summarized when they grow. */
 const CompactSchema = z

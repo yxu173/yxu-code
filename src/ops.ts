@@ -8,6 +8,7 @@ import { formatHookFailure, hasHooks, runHooks } from "./hooks.ts";
 import { newTaskId, runTask, Semaphore, writeTaskRecord } from "./runner.ts";
 import { taskPrompt } from "./prompts.ts";
 import { addNote } from "./task-notes.ts";
+import { loadRepoMap, mapSlice } from "./repomap.ts";
 import type { Asker } from "./permissions.ts";
 import { guard, untrustedYolo } from "./trust.ts";
 import { emptyUsage, type AgentEvent, type TaskResult } from "./types.ts";
@@ -120,7 +121,7 @@ export class TaskOps {
       const result = await runTask({
         agentName: agent,
         profile,
-        prompt: taskPrompt(this.root, { permission: profile.permission, instructions: def.instructions }, task),
+        prompt: taskPrompt(this.root, { permission: profile.permission, instructions: def.instructions }, task, this.mapFor(task)),
         title: from?.title ?? task,
         cwd: this.root,
         baseRef: base.baseRef,
@@ -140,6 +141,13 @@ export class TaskOps {
       this.opts.onChange?.();
       return result;
     });
+  }
+
+  /** The repo map's part for a task (context.repo_map), from the last map built. */
+  private mapFor(task: string): string | undefined {
+    if (!this.cfg.context.repo_map) return undefined;
+    const map = loadRepoMap(this.root);
+    return map ? mapSlice(map, task, { chars: this.cfg.context.repo_map_chars }) : undefined;
   }
 
   /** after_task hooks run in the task's worktree; what they change is committed to the task. */

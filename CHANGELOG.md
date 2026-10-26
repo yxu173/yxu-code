@@ -27,6 +27,11 @@ before 1.0, minor versions may change the config format (with migration notes he
   did, the checks and the review findings, closing the issue; `yxu fix-ci <pr>` has the debugger fix
   a PR's failing CI from its logs and pushes the fix after asking. Interface: `/issue`, `/pr`,
   `/fix-ci`, and [p] at a decision.
+- A repo map shared by every agent (`context.repo_map`, default on): files, symbols, imports,
+  tests, entry points, commands and conventions, built from HEAD and updated incrementally in
+  `.yxu/repomap.json`. Each subagent task gets the part relevant to it; the orchestrator gets the
+  overview and a `find_code` tool. `yxu map [words]`, `/map`. Subagents are also told to use
+  paths relative to the repository.
 - A friendly message when yxu runs outside a git repository.
 
 ### Changed

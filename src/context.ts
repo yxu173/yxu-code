@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { Config } from "./config.ts";
+import { loadRepoMap, overviewText } from "./repomap.ts";
 
 export interface IncludedFile {
   path: string;
@@ -49,6 +50,12 @@ export function buildContextPrompt(cfg: Config, root: string): { text: string; f
     const body = truncated ? `${raw.slice(0, max)}\n… [truncated: ${raw.length - max} more characters]` : raw;
     files.push({ path: p, chars: raw.length, truncated });
     parts.push(`## Included file: ${p}\n\`\`\`\n${body}\n\`\`\``);
+  }
+
+  if (context.repo_map) {
+    const map = loadRepoMap(root);
+    const ov = map ? overviewText(map) : "";
+    if (ov) parts.push(`## Repo map (yxu keeps it current; find_code(query) searches it)\n${ov}`);
   }
 
   const guidance = [BASE_COMPACT_GUIDANCE, compact.instructions?.trim()].filter(Boolean).join(" ");

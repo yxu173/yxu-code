@@ -291,6 +291,28 @@ Changes are for the current session until you `/save`. `/status` shows how many 
 Task ids can be the short suffix shown in the panel. The palette, `/help`, and execution all
 come from one registry (`src/tui/commands.ts`).
 
+### The repo map
+
+Every agent shares one map of the repository, so none of them rediscovers the layout on every
+task. It covers:
+- files and their symbols (with line numbers), and what imports what;
+- where the tests are and how they are named;
+- entry points, and the test, build and lint commands with the package manager;
+- conventions: modules, strictness, formatters and linters, indentation.
+
+yxu builds it from HEAD (what task worktrees start from) and keeps it in `.yxu/repomap.json`.
+It updates incrementally: only files whose content changed are read again. On this repo that's
+26 ms the first time and 3 ms after.
+
+- **Subagents:** every task gets the part relevant to it (the files and symbols it names, files
+  sharing its words, their tests and imports), within `context.repo_map_chars`.
+- **The orchestrator:** gets the overview, and a free, instant `find_code(query)` tool for "where
+  is X" before reading files or sending a scout.
+- **When it's built:** before every run, in the background when the interface starts, and after
+  an apply.
+- **Commands:** `yxu map [words]` and `/map [words]` show the overview, or what a task about those
+  words would get. Turn it off with `context.repo_map: false`.
+
 ### Context and compaction
 
 You control what the orchestrator sees and how its conversation is summarized, in `yxu.yaml`

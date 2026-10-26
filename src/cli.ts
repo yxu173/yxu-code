@@ -13,7 +13,7 @@ import { runPipeline } from "./orchestrator/pipeline.ts";
 import { compactConversation, orchestratorPrompt, runOrchestrator, sessionPath, type OrchestratorRender, type RunOutcome } from "./orchestrator/run.ts";
 import { Conversation, loadConversation, saveConversation } from "./conversation.ts";
 import { issueGoal, resolveIssue, type Issue } from "./github.ts";
-import { defaultBase, draftPr, openPr, recentTasks, tagIssue } from "./pr.ts";
+import { defaultBase, draftPr, openPr, recentTasks, tagIssue, tagRun } from "./pr.ts";
 import { fixCi } from "./fix-ci.ts";
 import { spawn } from "node:child_process";
 import { createYxuServer, SERVER_NAME, TOOL_NAMES } from "./orchestrator/tools.ts";
@@ -40,6 +40,7 @@ Usage:
                             pipelines take --input values, --yes approves their gates;
                             -c (--continue) continues the last conversation in this repo;
                             --issue 123|owner/repo#123|URL|linear:ENG-12 works on an issue
+  yxu map [words]           the repo map shared with every agent: overview, or what it finds
   yxu pr [task] [--title T] [--base B] [--branch name] [--draft] [--dry-run]
                             push a task's branch and open a pull request: what each agent
                             did, checks, review findings, "Closes #issue" (needs gh)
@@ -319,6 +320,7 @@ async function run(argv: string[]) {
         : runOrchestrator({ goal, cfg, workflow, root, abort: ac, render: r.render, session, resume: next.resume, preamble: next.preamble }),
     );
     if (issue) tagIssue(root, outcome.session.tasks.keys(), issue);
+    if (outcome.ok) tagRun(root, outcome.session.tasks.keys(), { goal: issue ? `${issue.title} (${issue.id})` : goal, report: outcome.finalText });
     if (auto && !outcome.cancelled) await rememberConversation(root, cfg, conv, { goal, outcome, usedSummary: next.usesSummary, continuing: Boolean(values.continue) });
 
     // The final report is usually the last assistant message, already printed above.
@@ -876,6 +878,17 @@ try {
     case "pr":
       await prCommand(rest);
       break;
+    case "map": {
+      const root = repoRoot(process.cwd());
+      const { buildRepoMap, mapSlice, overviewText } = await import("./repomap.ts");
+      const t = Date.now();
+      const map = await buildRepoMap(root, { yieldEvery: 0 });
+      if (!map) die("no repo map: this repository has no commits yet");
+      const q = rest.join(" ").trim();
+      if (!q) console.log(`${bold("repo map")} ${dim(`${Object.keys(map.files).length} files at ${map.head.slice(0, 8)} · ${Date.now() - t}ms · .yxu/repomap.json`)}\n${overviewText(map)}`);
+      else console.log(mapSlice(map, q, { chars: 6000, noOverview: true }));
+      break;
+    }
     case "fix-ci":
       await fixCiCommand(rest);
       break;

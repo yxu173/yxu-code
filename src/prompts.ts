@@ -37,6 +37,8 @@ files yourself; you only have read-only tools plus the yxu tools:
 - verify(task_id, command?): run the test/check command in a task's worktree.
 - get_diff(task_id, cumulative?): see a task's full diff.
 - discard(task_id): throw away failed, rejected, or superseded work.
+- find_code(query): the files and symbols the repo map ranks for a query (instant, free); use it
+  before reading files or sending a scout when you need to know where something is.
 
 ## How to work
 1. Read enough of the codebase to plan. Split the goal into small, concrete tasks.
@@ -83,6 +85,7 @@ missing requirements, lenient about style. If not approved, list concrete, self-
 
 export const SUBAGENT_PREAMBLE = `You are a coding subagent. Complete exactly the task below in the current directory.
 - Make the code changes directly. Do not commit; changes are collected automatically.
+- Your current directory is a copy of the repository: use paths relative to it, never absolute paths from the task.
 - Do not ask questions; make reasonable assumptions and state them.
 - Stay within the scope of the task; other agents may be editing other parts of the code in parallel.
 - Finish with a short summary: what you changed, any assumptions, and anything left undone.`;
@@ -91,12 +94,13 @@ export const SUBAGENT_PREAMBLE = `You are a coding subagent. Complete exactly th
 export const SUBAGENT_READONLY_PREAMBLE = `You are a read-only subagent. Complete exactly the task below by reading the code in the current directory.
 - Do not create, edit or delete files, and do not run commands that change anything.
 - Do not ask questions; make reasonable assumptions and state them.
+- Your current directory is a copy of the repository: use paths relative to it.
 - Your final message is your whole answer: make it complete and concrete, with file paths and line numbers.`;
 
 /** The text before a task: the preamble (read-only agents get their own), then the agent's role. */
-export function taskPrompt(root: string, agent: { permission?: string; instructions?: string }, task: string): string {
+export function taskPrompt(root: string, agent: { permission?: string; instructions?: string }, task: string, map?: string): string {
   const preamble = prompt(root, "subagent-preamble", agent.permission === "plan" ? SUBAGENT_READONLY_PREAMBLE : SUBAGENT_PREAMBLE).trimEnd();
-  return `${preamble}${agent.instructions ? `\n\n${agent.instructions.trimEnd()}` : ""}\n\nTASK:\n${task}`;
+  return `${preamble}${agent.instructions ? `\n\n${agent.instructions.trimEnd()}` : ""}${map ? `\n\n${map.trimEnd()}` : ""}\n\nTASK:\n${task}`;
 }
 
 export const resolverBase = (intents: string, conflicts: string) => `You are resolving a git merge conflict in the current directory. Several tasks changed the same code in parallel:
