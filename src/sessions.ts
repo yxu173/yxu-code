@@ -157,9 +157,14 @@ export function ago(iso: string, now = Date.now()): string {
 /** Home directory as ~ for display. */
 export const tildePath = (p: string) => (p.startsWith(homedir()) ? `~${p.slice(homedir().length)}` : p);
 
+/** Results of a session still waiting to be applied (their branches exist). */
+export function pendingIn(s: SessionFile): number {
+  return s.tasks.filter((id) => tryGit(s.root, "rev-parse", "--verify", "--quiet", branchFor(id)).ok).length;
+}
+
 /** One line per session, for lists. */
 export function describe(s: SessionFile, withRepo: boolean): string {
-  const pending = s.tasks.filter((id) => tryGit(s.root, "rev-parse", "--verify", "--quiet", branchFor(id)).ok).length;
+  const pending = pendingIn(s);
   const bits = [`${s.conversation.turn} turn${s.conversation.turn === 1 ? "" : "s"}`, ago(s.updatedAt), ...(pending ? [`${pending} pending`] : []), ...(s.folder !== s.root ? [`in ${tildePath(s.folder)}`] : [])];
   return `${s.id}  ${s.title}  ·  ${bits.join(" · ")}${withRepo ? `  ·  ${tildePath(s.root)}` : ""}`;
 }

@@ -226,7 +226,8 @@ describe("controlling everything", () => {
     expect(screen()).toContain("Workflow is now quick (auto)");
     expect(app.store.state.context.workflow).toBe("quick");
     app.runCommand("/new");
-    expect(screen()).toContain("new conversation");
+    expect(screen()).toContain("What should we work on?"); // an empty chat
+    expect(screen()).not.toContain("Workflow is now quick");
     done();
   });
 

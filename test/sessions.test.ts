@@ -99,6 +99,10 @@ describe("the session store", () => {
 });
 
 function app(root: string, engine: Engine, resume?: SessionFile) {
+  return app_(root, engine, resume);
+}
+
+function app_(root: string, engine: Engine, resume?: SessionFile) {
   let frame: Frame = { rows: [] };
   const a = new App({
     cfg: parseConfig("agents:\n  coder: { cli: opencode }\ncontext: { repo_map: false }\n", join(root, "yxu.yaml")),
@@ -176,6 +180,50 @@ describe("sessions in the interface", () => {
     second.app.input(`/resume ${elsewhere.id}\r`);
     expect(second.screen()).toContain(`yxu resume ${elsewhere.id}`);
     second.app.dispose();
+  });
+});
+
+describe("/new", () => {
+  test("opens an empty chat; the old one is saved and offered back with its waiting results", async () => {
+    const engine: Engine = {
+      async run({ goal, session }) {
+        const t = { taskId: "t-new-1", agent: "coder", ok: true, summary: "s", usage: emptyUsage(), exitCode: 0, durationMs: 1, diff: "+x", filesChanged: ["a"], branch: branchFor("t-new-1") };
+        writeTaskRecord(repoA, t, { prompt: "p" });
+        git(repoA, "branch", branchFor("t-new-1"));
+        session.tasks.set("t-new-1", { ...t, prompt: "p", parents: [] });
+        return { runId: "r", ok: true, finalText: `did: ${goal}`, costUsd: 0.2, session, sdkSessionId: "c-1" } as RunOutcome;
+      },
+    };
+    const { app, screen } = app_(repoA, engine);
+    app.input("Build the export\r");
+    await app.idle();
+    expect(app.store.state.status).toBe("deciding");
+    const old = listSessions({ root: repoA })[0]!;
+
+    app.input("/new\r");
+    const st = app.store.state;
+    expect(st.entries).toEqual([]);
+    expect(st).toMatchObject({ turn: 0, tasks: [], status: "ready", decision: undefined, remembering: false, cost: { orchestrator: 0, subagents: 0 } });
+    const s = screen();
+    expect(s).toContain("What should we work on?");
+    expect(s).toContain(`/resume ${old.id}`);
+    expect(s).toContain("Build the export · just now · 1 to apply");
+    expect(s).not.toContain("did: Build the export");
+    app.dispose();
+  });
+
+  test("waits for a running turn", async () => {
+    let release!: () => void;
+    const engine: Engine = { run: ({ session }) => new Promise((r) => (release = () => r({ runId: "r", ok: true, finalText: "ok", costUsd: 0, session } as RunOutcome))) };
+    const { app } = app_(repoA, engine);
+    app.input("go\r");
+    await Bun.sleep(5);
+    app.input("/new\r");
+    expect(app.store.state.flash).toContain("esc cancels it, then /new");
+    expect(app.store.state.entries.length).toBeGreaterThan(0);
+    release();
+    await app.idle();
+    app.dispose();
   });
 });
 

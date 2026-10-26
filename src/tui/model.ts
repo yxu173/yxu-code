@@ -122,7 +122,7 @@ export interface State {
   /** The agent being watched in the side panel (/watch). */
   watch?: WatchView;
   /** This repo's recent sessions, offered on the welcome screen. */
-  recent?: { id: string; title: string; turns: number; ago: string }[];
+  recent?: { id: string; title: string; turns: number; ago: string; pending?: number }[];
   /** Slash-command palette, open while the draft starts with "/". */
   palette?: PaletteState;
   /** Rows scrolled up from the bottom; 0 follows new output. */
