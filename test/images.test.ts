@@ -58,6 +58,7 @@ describe("images", () => {
   });
 
   test("the clipboard's image, from wl-paste (Wayland) or xclip (X11)", () => {
+    if (process.platform !== "linux") return; // macOS and Windows use their own clipboard tools
     process.env.PATH = pathWith(bin, origPath);
     process.env.WAYLAND_DISPLAY = "wayland-test";
     writeFileSync(join(bin, "clip.png"), PNG);
@@ -120,7 +121,11 @@ describe("images in the interface", () => {
     const app = new App({ cfg: parseConfig("agents:\n  coder: { cli: opencode }\ncontext: { repo_map: false }\n", join(dir, "yxu.yaml")), root: dir, theme: createTheme({ depth: "none", ascii: false, reducedMotion: true }), engine, historyFile: null, catalog: testCatalog(), draw: (f) => (frame = f), size: () => ({ width: 130, height: 40 }), exit: () => {} });
     const screen = () => (app.render(), frame.rows.join("\n"));
 
-    app.input("\x16"); // ctrl+v
+    if (process.platform === "linux") app.input("\x16"); // ctrl+v: the (fake) clipboard's image
+    else {
+      writeFileSync(join(dir, "pasted-elsewhere.png"), PNG); // other systems use their own clipboard tools
+      app.input("/image ./pasted-elsewhere.png\r");
+    }
     expect(app.store.state.attachments?.map((a) => a.name)).toEqual([expect.stringMatching(/^pasted-.*\.png$/)]);
     app.input("/image ./shot one.png\r");
     expect(app.store.state.attachments).toHaveLength(2);
