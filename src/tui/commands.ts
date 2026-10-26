@@ -519,6 +519,46 @@ export const COMMANDS: Command[] = [
     run: (app, [id]) => app.taskAction("apply", id),
   },
   {
+    name: "pr",
+    usage: "<task> [--draft] [--base branch] [--title text]",
+    description: "Push a task and open a pull request (agents' work, checks, reviews, issue)",
+    group: "tasks",
+    needsArgs: true,
+    complete: (app, i) => (i === 0 ? taskSuggestions(app, true) : [{ value: "--draft" }, { value: "--base" }, { value: "--title" }]),
+    run: (app, args) => {
+      const [id, ...rest] = args;
+      const o: { draft?: boolean; base?: string; title?: string } = {};
+      for (let i = 0; i < rest.length; i++) {
+        if (rest[i] === "--draft") o.draft = true;
+        else if (rest[i] === "--base") o.base = rest[++i];
+        else if (rest[i] === "--title") {
+          o.title = rest.slice(i + 1).join(" ");
+          break;
+        }
+      }
+      const task = app.resolveTask(id ?? "");
+      if (!task) return app.fail(id ? `no task matching "${id}"` : "usage: /pr <task> [--draft] [--base branch] [--title text]", "type /tasks to list task ids");
+      app.pullRequest(task, o);
+    },
+  },
+  {
+    name: "issue",
+    usage: "<123 | owner/repo#123 | url | linear:ENG-12> [more instructions]",
+    description: "Work on an issue: its text, comments and files become the goal",
+    group: "tasks",
+    needsArgs: true,
+    run: (app, args) => void app.startIssue(args.join(" ")),
+  },
+  {
+    name: "fix-ci",
+    usage: "<pr> [agent]",
+    description: "Fix a pull request's failing CI on its branch (asks before pushing)",
+    group: "tasks",
+    needsArgs: true,
+    complete: (app, i) => (i === 1 ? agentSuggestions(app) : []),
+    run: (app, [pr, agent]) => void app.fixCi(pr ?? "", agent),
+  },
+  {
     name: "discard",
     usage: "<task>",
     description: "Throw a task's changes away",

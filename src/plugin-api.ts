@@ -109,6 +109,24 @@ export interface Plugin {
   hooks?: PluginHooks;
   agents?: PluginAgent[];
   orchestrators?: PluginOrchestrator[];
+  issues?: PluginIssueSource[];
+}
+
+/** An issue tracker: `yxu run --issue <name>:<id>` (e.g. linear:ENG-12, jira:PROJ-7). */
+export interface PluginIssueSource {
+  name: string;
+  description?: string;
+  fetch(id: string, ctx: PluginContext): Promise<PluginIssue> | PluginIssue;
+}
+
+export interface PluginIssue {
+  /** As the tracker shows it, e.g. ENG-12. */
+  id: string;
+  title: string;
+  body?: string;
+  url?: string;
+  labels?: string[];
+  comments?: { author: string; body: string }[];
 }
 
 /** Optional helper for type checking without `satisfies`. */

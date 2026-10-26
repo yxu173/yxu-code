@@ -22,6 +22,11 @@ before 1.0, minor versions may change the config format (with migration notes he
   passed on with them. `/compact background on|off|<n%>`.
 - `yxu run -c` (`--continue`) continues the repo's last conversation; after a run, it is summarized
   in a detached process for the next one.
+- From issue to pull request: `yxu run --issue 123` (or `linear:ENG-12` from a plugin issue source)
+  makes the issue the goal; `yxu pr <task>` pushes a task and opens a PR describing what each agent
+  did, the checks and the review findings, closing the issue; `yxu fix-ci <pr>` has the debugger fix
+  a PR's failing CI from its logs and pushes the fix after asking. Interface: `/issue`, `/pr`,
+  `/fix-ci`, and [p] at a decision.
 - A friendly message when yxu runs outside a git repository.
 
 ### Changed

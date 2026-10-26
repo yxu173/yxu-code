@@ -104,6 +104,31 @@ Change the team to fit: any agent's model or CLI, its role, or add your own. In 
 or in `yxu.yaml`, or with `yxu config set agents.scout.cli opencode --local`. `yxu init --template minimal`
 writes one coder per CLI instead.
 
+## From issue to pull request
+
+With the [GitHub CLI](https://cli.github.com) (`gh auth login`):
+
+```sh
+yxu run --issue 123                  # the issue's text, comments and the files it mentions are the goal
+yxu run --issue 123 "keep the API"   # …plus your own instructions
+yxu pr <task>                        # push the task and open a PR (--draft, --base, --title, --dry-run)
+yxu fix-ci 45                        # the PR's CI fails: the debugger fixes it on its branch, then it's pushed
+```
+
+- **`yxu pr` writes the description from what happened:** "Closes #123", what each agent did
+  and which files it changed, the checks that ran (✅/❌ with the failing output), and what
+  reviewers found (read-only `reviewer` tasks and pipeline reviews). It pushes the task's branch
+  as `yxu/<issue>-<title>` and opens the PR into the repo's default branch.
+- **`yxu fix-ci`** reads the end of each failed GitHub Actions job. It has `debugger` fix the
+  cause on top of the PR's head (it's told not to skip tests or weaken checks), runs your
+  `verify` command, and retries once with that output. Then it asks before pushing to the PR's
+  branch (`--yes` skips the question, `--no-push` keeps it local). It never force-pushes, and it
+  doesn't push to forks.
+- **Other trackers:** issues `linear:ENG-12` or `jira:PROJ-7` come from plugins that add an issue
+  source (docs/PLUGINS.md).
+- **In the interface:** `/issue 123 [more]`, `/pr <task>`, `/fix-ci <pr>`, and **[p] pull
+  request** next to apply when a result is ready.
+
 ## Configuration
 
 Settings come from layers. A later layer wins; maps merge, lists replace, and `null` removes

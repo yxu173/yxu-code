@@ -14,6 +14,10 @@ import { branchFor, excludeYxuDir, tryGit } from "../git.ts";
 import { Session } from "../ops.ts";
 import { runPipeline } from "../orchestrator/pipeline.ts";
 import { Conversation } from "../conversation.ts";
+import { fixCi, type FixCiOptions, type FixCiResult } from "../fix-ci.ts";
+import { issueGoal, resolveIssue } from "../github.ts";
+import { openPr, tagIssue, type OpenPrOptions } from "../pr.ts";
+import type { IssueRef } from "../task-notes.ts";
 import { compactConversation, runOrchestrator, type OrchestratorRender, type RunOutcome } from "../orchestrator/run.ts";
 import { saveConfigPatch } from "../config-edit.ts";
 import { display, FILE_LAYERS, LAYERS, loadLayers, originOf, type FileLayer } from "../config-layers.ts";
@@ -67,6 +71,12 @@ export interface TaskBackend {
   diff(id: string): string;
   apply(id: string): ActionResult | Promise<ActionResult>;
   discard(id: string): ReturnType<typeof discardTask>;
+  /** GitHub (or plugin trackers): issues in, pull requests out, CI fixes. */
+  github?: {
+    issue(ref: string): Promise<{ goal: string; issue: IssueRef }>;
+    pullRequest(id: string, o: OpenPrOptions): string;
+    fixCi(pr: string, o: Omit<FixCiOptions, "print"> & { print: (l: string) => void }): Promise<FixCiResult>;
+  };
 }
 
 export function gitBackend(root: string, cfg: () => Config): TaskBackend {
@@ -78,6 +88,15 @@ export function gitBackend(root: string, cfg: () => Config): TaskBackend {
     },
     apply: (id) => (hasHooks(cfg(), "before_apply") ? applyWithHooks(cfg(), root, id) : applyTask(root, id)),
     discard: (id) => discardTask(root, id),
+    github: {
+      issue: async (ref) => {
+        const [r, ...extra] = ref.split(/\s+/);
+        const issue = await resolveIssue(root, cfg(), r!);
+        return { goal: issueGoal(root, issue, extra.join(" ")), issue };
+      },
+      pullRequest: (id, o) => openPr(root, id, o),
+      fixCi: (pr, o) => fixCi(root, cfg(), pr, o),
+    },
   };
 }
 
@@ -407,6 +426,7 @@ export class App {
       if (t === "v") return void this.decide("view");
       if (t === "l") return void this.decide("later");
       if (t === "x") return void this.decide("discard");
+      if (t === "p") return void this.decide("pr");
     }
 
     switch (k.name) {
@@ -1112,7 +1132,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
   }
 
   /** Accept a full task id or a unique suffix (the short ids shown in the panel). */
-  private resolveTask(arg: string): string | undefined {
+  resolveTask(arg: string): string | undefined {
     if (!arg) return undefined;
     if (this.store.state.tasks.some((t) => t.taskId === arg) || readTaskRecord(this.o.root, arg)) return arg;
     const matches = this.store.state.tasks.filter((t) => t.taskId.endsWith(arg));
@@ -1329,6 +1349,9 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
   private async startRun(goal: string, run?: { workflow?: Workflow & { name: string }; inputs?: Record<string, string> }) {
     const s = this.store;
     s.set({ turn: s.state.turn + 1 });
+    const issue = this.runIssue;
+    this.runIssue = undefined;
+    const before = new Set(this.session.tasks.keys());
     const time = new Date();
     s.add({
       kind: "divider",
@@ -1369,6 +1392,13 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     this.markStragglers();
     s.set({ activeSlots: 0 });
     this.syncTasks();
+    if (issue) {
+      try {
+        tagIssue(this.o.root, [...this.session.tasks.keys()].filter((id) => !before.has(id)), issue);
+      } catch {
+        // best effort: only the PR's "Closes" line depends on it
+      }
+    }
 
     const cancelled = this.abort.signal.aborted || outcome?.cancelled;
     this.abort = undefined;
@@ -1736,10 +1766,16 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     if (deferred) this.store.add({ kind: "notice", tone: "info", text: `Kept for later: /apply ${d.taskId}` });
   }
 
-  async decide(choice: "apply" | "view" | "later" | "discard") {
+  async decide(choice: "apply" | "view" | "later" | "discard" | "pr") {
     const d = this.store.state.decision;
     if (!d) return;
     if (choice === "view") return this.showDiff(d.taskId);
+    if (choice === "pr") {
+      this.store.set({ decision: undefined });
+      this.pullRequest(d.taskId);
+      if (!this.offerDecision() && this.store.state.status !== "fault") this.settle();
+      return;
+    }
     if (choice === "later") {
       this.clearDecision(true);
       this.store.setStatus("ready");
@@ -1749,6 +1785,68 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     if (choice === "apply") await this.applyTask(d.taskId);
     else this.discardTask(d.taskId);
     if (!this.offerDecision() && this.store.state.status !== "fault") this.settle();
+  }
+
+  /** `/pr [task] [--draft] [--base B] [--title …]`, or [p] at a decision: push and open a pull request. */
+  pullRequest(id: string, o: OpenPrOptions = {}) {
+    const gh = this.backend.github;
+    if (!gh) return this.fail("pull requests aren't available here");
+    try {
+      this.store.add({ kind: "notice", tone: "info", text: `Opening a pull request for ${id}…` });
+      this.o.invalidate?.();
+      const url = gh.pullRequest(id, o);
+      this.store.add({ kind: "notice", tone: "ok", text: `Pull request: ${url}` });
+    } catch (e) {
+      this.fail((e as Error).message, "check `gh auth status`, or the task id (/tasks)");
+    }
+  }
+
+  /** The issue a run is for: its tasks are tagged so a pull request closes it. */
+  private runIssue?: IssueRef;
+
+  /** `/issue <ref> [more instructions]`: work on an issue. */
+  async startIssue(ref: string) {
+    const gh = this.backend.github;
+    if (!gh) return this.fail("issues aren't available here");
+    if (!ref.trim()) return this.fail("usage: /issue <123 | owner/repo#123 | url | linear:ENG-12> [more instructions]");
+    let got: { goal: string; issue: IssueRef };
+    try {
+      got = await gh.issue(ref.trim());
+    } catch (e) {
+      return this.fail((e as Error).message, "check `gh auth status`; trackers like linear: come from plugins");
+    }
+    this.runIssue = got.issue;
+    this.store.add({ kind: "notice", tone: "info", text: `Issue ${got.issue.id}: ${got.issue.title}${got.issue.url ? ` (${got.issue.url})` : ""}` });
+    this.startGoal(got.goal);
+  }
+
+  /** `/fix-ci <pr>`: the debugger fixes a PR's failing CI; asks before pushing. */
+  async fixCi(pr: string, agent?: string) {
+    const gh = this.backend.github;
+    if (!gh) return this.fail("CI fixes aren't available here");
+    if (!pr) return this.fail("usage: /fix-ci <pr number or url> [agent]");
+    const st = this.store.state;
+    if (st.status === "working" || st.status === "cancelling") return this.flash("an operation is running — esc cancels it", 2500);
+    this.store.setStatus("working", `fixing CI of ${pr}`);
+    this.startTicker();
+    this.abort = new AbortController();
+    try {
+      const r = await gh.fixCi(pr, {
+        agent,
+        signal: this.abort.signal,
+        hooks: this.renderAdapter().hooks,
+        print: (l) => this.store.add({ kind: "notice", tone: "info", text: l }),
+        confirmPush: (m) => this.askGate(m, "push"),
+      });
+      this.syncTasks();
+      this.store.add(r.status === "failed" ? { kind: "error", message: r.message } : { kind: "notice", tone: r.status === "fixed" ? "ok" : "info", text: r.message });
+    } catch (e) {
+      this.fail((e as Error).message);
+    } finally {
+      this.stopTicker();
+      this.abort = undefined;
+    }
+    if (this.store.state.status === "working") this.settle();
   }
 
   private showDiff(id: string) {

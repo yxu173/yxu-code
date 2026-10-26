@@ -450,6 +450,7 @@ export function decisionRows(state: State, w: number, ctx: ViewContext): Line[] 
   const options: Line = [
     s("[a]", { fg: "amber", bold: true }), s(" apply to your branch   ", { fg: "ivory" }),
     s("[v]", { fg: "amber", bold: true }), s(" view diff   ", { fg: "ivory" }),
+    s("[p]", { fg: "amber", bold: true }), s(" pull request   ", { fg: "ivory" }),
     s("[l]", { fg: "amber", bold: true }), s(" later   ", { fg: "ivory" }),
     s("[x]", { fg: "amber", bold: true }), s(" discard", { fg: "ivory" }),
   ];
