@@ -11,6 +11,7 @@ import { newTaskId } from "../runner.ts";
 import { createYxuServer, SERVER_NAME, TOOL_NAMES } from "./tools.ts";
 import { buildRepoMap } from "../repomap.ts";
 import { recapPreamble, type TurnRecord } from "../conversation.ts";
+import { withImages, type Attachment } from "../images.ts";
 import { hasTranscript, transcriptStore } from "../transcripts.ts";
 
 /** Read-only built-ins so the orchestrator can study the code but never edit it. */
@@ -187,9 +188,11 @@ export async function askOrchestrator<T extends z.ZodType>(opts: {
   prompt: string;
   schema: T;
   render?: DrainRender;
+  /** Images to look at (a pipeline's plan step sees the user's images). */
+  images?: Attachment[];
 }): Promise<{ value: z.infer<T>; costUsd: number }> {
   const q = query({
-    prompt: opts.prompt,
+    prompt: opts.images?.length ? withImages(opts.prompt, opts.images) : opts.prompt,
     options: {
       ...baseOptions(opts.cfg, opts.root, opts.abort),
       allowedTools: READ_ONLY_TOOLS,
@@ -243,6 +246,8 @@ export async function runOrchestrator(opts: {
   preamble?: string;
   /** The conversation so far as yxu recorded it: used if `resume` can't be found anywhere. */
   history?: TurnRecord[];
+  /** Images that come with the goal: the orchestrator sees them. */
+  images?: Attachment[];
 }): Promise<RunOutcome> {
   const { cfg, workflow, root, render } = opts;
   if ((cfg.orchestrator.provider ?? "claude") !== "claude") {
@@ -263,6 +268,7 @@ export async function runOrchestrator(opts: {
   const mid = new MidRunCompactor(cfg, root, opts.abort.signal);
   let prompt = `${opts.preamble ?? ""}${opts.goal}`;
   let resume = opts.resume;
+  let images = opts.images ?? [];
   // Neither yxu's copy nor Claude Code's history has the conversation: start again from yxu's record.
   let rebuilt = false;
   if (resume && !(await conversationExists(resume, root))) {
@@ -276,7 +282,8 @@ export async function runOrchestrator(opts: {
   for (;;) {
     const budget = cfg.orchestrator.max_budget_usd;
     const q = query({
-      prompt,
+      // The first query carries the user's images; a hand-over continues in text.
+      prompt: images.length ? withImages(prompt, images) : prompt,
       options: {
         ...baseOptions(cfg, root, opts.abort),
         maxBudgetUsd: budget === undefined ? undefined : Math.max(0.01, budget - spent - mid.costUsd),
@@ -296,6 +303,7 @@ export async function runOrchestrator(opts: {
     render.compacted?.(h.compaction);
     prompt = h.prompt;
     resume = h.sessionId;
+    images = [];
     mid.reset();
   }
   r.costUsd = spent + mid.costUsd;

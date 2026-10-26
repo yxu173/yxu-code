@@ -151,7 +151,9 @@ function renderEntry(e: Entry, w: number, selected: boolean, ctx: ViewContext): 
 
     case "user": {
       const rows = wrapText(e.text, inner, { fg: "ivory", bold: true });
-      return [[], ...rows.map((r, i) => [...(i === 0 ? gutterLine(g.you, { fg: "cyan", bold: true }) : indent), ...r])];
+      const out: Line[] = [[], ...rows.map((r, i) => [...(i === 0 ? gutterLine(g.you, { fg: "cyan", bold: true }) : indent), ...r])];
+      for (const img of e.images ?? []) out.push(truncate([...indent, s(`${g.image} `, { fg: "violet" }), s(img, { fg: "dim" })], w));
+      return out;
     }
 
     case "assistant": {
@@ -299,6 +301,7 @@ export const KEY_HELP: [string, string][] = [
   ["alt+enter  ctrl+j", "new line"],
   ["↑ ↓", "move / history"],
   ["pgup pgdn  mouse wheel", "scroll conversation (shift+wheel: a page)"],
+  ["ctrl+v", "attach the image on the clipboard (or drag an image file in)"],
   ["shift+drag", "select text (the wheel belongs to yxu; ui.mouse: false gives it back)"],
   ["end", "follow newest output"],
   ["ctrl+↑ ctrl+↓", "select activity"],
@@ -692,7 +695,15 @@ export function renderFrame(state: State, editor: Editor, width: number, height:
   const inputShown = Math.min(input.rows.length, maxInput);
   // Keep the cursor row visible when the draft is taller than the box.
   const inputStart = Math.max(0, Math.min(input.cursor.row - inputShown + 1, input.rows.length - inputShown));
-  const inputBlock: Line[] = [[s(" "), s(g.rtl + g.h.repeat(boxW - 2) + g.rtr, border)]];
+  const inputBlock: Line[] = [];
+  // Images waiting to go with the message, just above the box.
+  if (state.attachments?.length) {
+    const chips: Line = [s("  ")];
+    for (const a of state.attachments) chips.push(s(`${g.image} `, { fg: "violet" }), s(a.name, { fg: "ivory" }), s(` ${a.bytes >= 1048576 ? `${(a.bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(a.bytes / 1024))} KB`}   `, { fg: "faint" }));
+    chips.push(s("/image clear removes", { fg: "faint" }));
+    inputBlock.push(truncate(chips, L.main));
+  }
+  inputBlock.push([s(" "), s(g.rtl + g.h.repeat(boxW - 2) + g.rtr, border)]);
   const isEmpty = editor.isEmpty;
   for (let i = 0; i < inputShown; i++) {
     const text = input.rows[inputStart + i] ?? "";
@@ -742,7 +753,7 @@ export function renderFrame(state: State, editor: Editor, width: number, height:
   });
   for (const r of footer) out.push(toAnsi(pad(r, width), theme));
 
-  const cursorRow = headerRows.length + body.length + decision.length + 1 + (input.cursor.row - inputStart);
+  const cursorRow = headerRows.length + body.length + decision.length + (state.attachments?.length ? 2 : 1) + (input.cursor.row - inputStart);
   const cursor = state.helpOpen ? undefined : { row: cursorRow, col: 5 + input.cursor.col };
   return { rows: out.slice(0, height), cursor };
 }

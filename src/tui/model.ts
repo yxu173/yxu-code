@@ -15,7 +15,7 @@ interface Base {
 
 export type Entry = Base &
   (
-    | { kind: "user"; text: string; time: Date }
+    | { kind: "user"; text: string; time: Date; images?: string[] }
     | { kind: "assistant"; text: string; streaming: boolean }
     | {
         kind: "activity";
@@ -121,6 +121,8 @@ export interface State {
   compactingInBackground?: boolean;
   /** The agent being watched in the side panel (/watch). */
   watch?: WatchView;
+  /** Images waiting to go with the next message (ctrl+v, /image, a dropped file). */
+  attachments?: { path: string; name: string; bytes: number }[];
   /** This repo's recent sessions, offered on the welcome screen. */
   recent?: { id: string; title: string; turns: number; ago: string; pending?: number }[];
   /** Slash-command palette, open while the draft starts with "/". */

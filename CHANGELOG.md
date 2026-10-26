@@ -5,6 +5,12 @@ before 1.0, minor versions may change the config format (with migration notes he
 
 ## Unreleased
 
+### Added
+- Images: ctrl+v attaches the clipboard's image, dragging an image file in (or naming its path)
+  attaches it, `/image <path|clear>`, and `yxu run --image <file>`. The orchestrator sees them with
+  your message; a pipeline's plan step sees them too; subagents get their paths (and a description
+  in their task). PNG, JPEG, GIF, WebP up to 5 MB.
+
 ### Changed
 - `/new` opens a new, empty chat (the welcome screen) instead of a divider under the old one: the
   turn count, context gauge, tasks and cost start over. The previous chat is saved; the welcome

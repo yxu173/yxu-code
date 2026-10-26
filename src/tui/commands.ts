@@ -264,6 +264,14 @@ export const COMMANDS: Command[] = [
     run: (app, args) => app.switchWorkflow(args.join(" ").trim()),
   },
   {
+    name: "image",
+    usage: "[path|clear]",
+    description: "Attach an image to your next message (no path: the clipboard's; ctrl+v does the same)",
+    group: "session",
+    complete: (_app, i) => (i === 0 ? [{ value: "clear", description: "remove attached images" }] : []),
+    run: (app, args) => app.attachImage(args.join(" ")),
+  },
+  {
     name: "orchestrator",
     usage: "[setting value] | prompt",
     description: "See and change the orchestrator: model, effort, budget, turns, provider, instructions, prompt",
