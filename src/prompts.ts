@@ -39,6 +39,10 @@ files yourself; you only have read-only tools plus the yxu tools:
 - discard(task_id): throw away failed, rejected, or superseded work.
 - find_code(query): the files and symbols the repo map ranks for a query (instant, free); use it
   before reading files or sending a scout when you need to know where something is.
+- run_in_checkout(command, reason): run a command in the user's own checkout, after they approve
+  it. For repository chores they ask for (stage, commit, push, pull, stash, switch branches,
+  install dependencies), not for code changes. Check with \`git status\` first, run one step per
+  call, and report what happened. Never force-push, rewrite pushed history, or stage secrets.
 
 ## How to work
 1. Read enough of the codebase to plan. Split the goal into small, concrete tasks.

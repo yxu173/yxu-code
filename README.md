@@ -293,6 +293,21 @@ Changes are for the current session until you `/save`. `/status` shows how many 
 Task ids can be the short suffix shown in the panel. The palette, `/help`, and execution all
 come from one registry (`src/tui/commands.ts`).
 
+### Chores in your checkout
+
+Ask for repository chores in plain words, for example "push everything except the tasks folder
+to main-dev" or "stash this and switch to main". The orchestrator runs the git (or install)
+commands in your own checkout, and **asks you before each one**, showing the command and why:
+
+```
+△ orchestrator (in your checkout) wants to run `git commit -m "Add rail and docs"` — Commit the staged files
+  [y] once   [a] allow for this session   [n] no
+```
+
+Read-only git commands (`git status`, `diff`, `log`, …) run without asking. It never
+force-pushes or rewrites pushed history. Code changes still go to subagents in their own
+worktrees. `settings.checkout_commands: allow` stops the questions; `off` turns it off.
+
 ### Sessions
 
 Every conversation with yxu is a session, saved for you (not in the repo) in
