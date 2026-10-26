@@ -277,7 +277,10 @@ function welcome(state: State, w: number, h: number, ctx: ViewContext): Line[] {
     lines.push([]);
     lines.push([s("Pick up where you left off", { fg: "violet", bold: true })]);
     const idw = Math.max(...recent.map((r) => r.id.length)) + 8;
-    for (const r of recent) item(`/resume ${r.id}`, `${r.title} ${g.dot} ${r.ago}`, { fg: "cyan" }, idw);
+    for (const r of recent) {
+      item(`/resume ${r.id}`, `${r.title} ${g.dot} ${r.ago}`, { fg: "cyan" }, idw);
+      if (r.pending) lines[lines.length - 1]!.push(s(` ${g.dot} ${r.pending} to apply`, { fg: "amber" }));
+    }
   }
   const pending = state.tasks.filter((t) => t.pending).length;
   if (pending) {

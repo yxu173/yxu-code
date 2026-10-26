@@ -124,7 +124,7 @@ export interface State {
   /** Images waiting to go with the next message (ctrl+v, /image, a dropped file). */
   attachments?: { path: string; name: string; bytes: number }[];
   /** This repo's recent sessions, offered on the welcome screen. */
-  recent?: { id: string; title: string; turns: number; ago: string }[];
+  recent?: { id: string; title: string; turns: number; ago: string; pending?: number }[];
   /** Slash-command palette, open while the draft starts with "/". */
   palette?: PaletteState;
   /** Rows scrolled up from the bottom; 0 follows new output. */

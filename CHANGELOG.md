@@ -11,6 +11,12 @@ before 1.0, minor versions may change the config format (with migration notes he
   your message; a pipeline's plan step sees them too; subagents get their paths (and a description
   in their task). PNG, JPEG, GIF, WebP up to 5 MB.
 
+### Changed
+- `/new` opens a new, empty chat (the welcome screen) instead of a divider under the old one: the
+  turn count, context gauge, tasks and cost start over. The previous chat is saved; the welcome
+  screen offers it back with `/resume <id>` and shows how many of its results are waiting to be
+  applied. `/new` waits while a run is going (esc cancels it first).
+
 ## 0.1.2 (2026-10-26)
 
 ### Added

@@ -19,7 +19,7 @@ import { runPipeline } from "../orchestrator/pipeline.ts";
 import { Conversation, type TurnRecord } from "../conversation.ts";
 import { attach, clipboardImage, findImagePaths, size as imageSize, type Attachment } from "../images.ts";
 import { fieldNamed, ORCHESTRATOR_FIELDS, orchestratorReport } from "../orchestrator-settings.ts";
-import { ago, samePath, describe as describeSession, findSession, listSessions, newSession, restoreTasks, saveSession, tildePath, titleFrom, type SessionFile } from "../sessions.ts";
+import { ago, pendingIn, samePath, describe as describeSession, findSession, listSessions, newSession, restoreTasks, saveSession, tildePath, titleFrom, type SessionFile } from "../sessions.ts";
 import { liveTask, liveTasks, onLiveChange, type LiveControl } from "../runner.ts";
 import { buildRepoMap, loadRepoMap, mapSlice, overviewText, type RepoMap } from "../repomap.ts";
 import { fixCi, type FixCiOptions, type FixCiResult } from "../fix-ci.ts";
@@ -779,9 +779,17 @@ export class App {
     this.store.set({ remembering: false });
   }
 
+  /** `/new`: an empty chat. The old one is saved; its results wait in it (the welcome screen offers it back). */
   newConversation() {
+    const st = this.store.state;
+    if (st.status === "working" || st.status === "cancelling") return this.flash("a run is going — esc cancels it, then /new", 3000);
+    this.persist();
     this.resetConversation();
-    this.store.add({ kind: "divider", label: "new conversation" });
+    this.session = new Session();
+    this.clearView();
+    this.store.set({ turn: 0, usage: undefined, tasks: [], decision: undefined, cost: { orchestrator: 0, subagents: 0 } });
+    this.syncTasks();
+    this.store.setStatus("ready");
   }
 
   clearView() {
@@ -1971,7 +1979,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
       const recent = listSessions({ root: this.o.root })
         .filter((x) => x.id !== this.saved.id)
         .slice(0, 3)
-        .map((x) => ({ id: x.id, title: x.title, turns: x.conversation.turn, ago: ago(x.updatedAt) }));
+        .map((x) => ({ id: x.id, title: x.title, turns: x.conversation.turn, ago: ago(x.updatedAt), pending: pendingIn(x) }));
       this.store.set({ recent });
     } catch {
       // no session store: nothing to offer

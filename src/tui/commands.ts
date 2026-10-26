@@ -183,7 +183,7 @@ export const COMMANDS: Command[] = [
   // ── session ──
   { name: "help", description: "Keys, commands, and what every sign means", group: "session", run: (app) => app.store.set({ helpOpen: true }) },
   { name: "status", description: "Session settings, memory, context use, and cost", group: "session", run: (app) => app.showStatus() },
-  { name: "new", description: "Start a fresh orchestrator conversation", group: "session", run: (app) => app.newConversation() },
+  { name: "new", description: "Start a new, empty chat (this one is saved: /resume brings it back)", group: "session", run: (app) => app.newConversation() },
   { name: "clear", description: "Clear the conversation view (tasks are kept)", group: "session", run: (app) => app.clearView() },
   {
     name: "save",
