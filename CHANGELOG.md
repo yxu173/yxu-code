@@ -3,6 +3,14 @@
 All notable changes are listed here. The project uses [semantic versioning](https://semver.org);
 before 1.0, minor versions may change the config format (with migration notes here).
 
+## Unreleased
+
+### Added
+- `/orchestrator` and `yxu orchestrator`: every orchestrator setting (model, effort, budget, turns,
+  provider and its agent, your global Claude settings, standing instructions) with where it comes
+  from, changed in place (`/orchestrator <setting> <value>`, `yxu orchestrator set … [--local|--user]`),
+  and its full instructions (`/orchestrator prompt`).
+
 ## 0.1.1 (2026-10-26)
 
 ### Added

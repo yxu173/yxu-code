@@ -7,6 +7,7 @@ import { agentRefs, parseDuration } from "../config.ts";
 import { tryGit } from "../git.ts";
 import { which } from "../platform.ts";
 import { liveTasks } from "../runner.ts";
+import { fieldNamed, ORCHESTRATOR_FIELDS } from "../orchestrator-settings.ts";
 import { ago, listSessions } from "../sessions.ts";
 import type { CliName } from "../types.ts";
 import { commandUsage, type UserCommand } from "../user-commands.ts";
@@ -261,6 +262,22 @@ export const COMMANDS: Command[] = [
     complete: (app, i) =>
       i === 0 ? Object.entries(app.cfg.workflows).map(([n, w]) => ({ value: n, description: `${w.mode}${w.steps ? ` · ${w.steps.map((s) => s.id).join(" → ")}` : ""}` })) : [],
     run: (app, args) => app.switchWorkflow(args.join(" ").trim()),
+  },
+  {
+    name: "orchestrator",
+    usage: "[setting value] | prompt",
+    description: "See and change the orchestrator: model, effort, budget, turns, provider, instructions, prompt",
+    group: "orchestrator",
+    searchDescriptions: true,
+    complete: (app, i, before) => {
+      if (i === 0) return [...ORCHESTRATOR_FIELDS.map((f) => ({ value: f.name, description: `${f.show(app.cfg).split("\n")[0]!.slice(0, 40)} · ${f.about}` })), { value: "prompt", description: "show its full instructions" }];
+      const f = fieldNamed(before[0] ?? "");
+      if (i === 1 && f?.name === "model") return modelSuggestions(app, "claude", app.cfg.orchestrator.model);
+      if (i === 1) return f?.values?.(app.cfg) ?? [];
+      if (i === 2 && f?.name === "provider" && before[1] === "agent") return agentSuggestions(app);
+      return [];
+    },
+    run: (app, args) => app.orchestratorCommand(args),
   },
   {
     name: "model",
