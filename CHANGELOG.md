@@ -10,6 +10,10 @@ before 1.0, minor versions may change the config format (with migration notes he
   stash, switching branches, installing dependencies. It asks before each command (showing why),
   read-only git commands run without asking, and `settings.checkout_commands: ask|allow|off`
   controls it. "Push everything except tasks/ to main-dev" now just happens, after your yes.
+- Sessions resume without Claude Code's history: yxu keeps its own copy of every orchestrator
+  conversation (`~/.local/share/yxu/transcripts`, through the Agent SDK's session store) and
+  resumes from it. When no copy exists anywhere, the conversation is rebuilt from yxu's record of
+  the session's turns, with a notice. `yxu sessions rm` removes a session's transcripts.
 
 ## 0.1.1 (2026-10-26)
 
