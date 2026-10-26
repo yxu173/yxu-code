@@ -214,7 +214,10 @@ export function jsonSchema(schema: z.ZodType): Record<string, unknown> {
 export async function conversationExists(sessionId: string, root: string): Promise<boolean> {
   if (hasTranscript(sessionId)) return true;
   try {
-    return Boolean(await getSessionInfo(sessionId, { dir: root }));
+    // Claude Code's lookup can be slow (it scans its history); if it doesn't answer in time,
+    // assume the conversation is there rather than drop its memory.
+    const info = await Promise.race([getSessionInfo(sessionId, { dir: root }).then((i) => Boolean(i)), new Promise<boolean>((r) => setTimeout(() => r(true), 10_000).unref?.())]);
+    return info;
   } catch {
     return false;
   }

@@ -6,6 +6,10 @@ before 1.0, minor versions may change the config format (with migration notes he
 ## Unreleased
 
 ### Added
+- `/orchestrator` and `yxu orchestrator`: every orchestrator setting (model, effort, budget, turns,
+  provider and its agent, your global Claude settings, standing instructions) with where it comes
+  from, changed in place (`/orchestrator <setting> <value>`, `yxu orchestrator set … [--local|--user]`),
+  and its full instructions (`/orchestrator prompt`).
 - The orchestrator can run chores in your own checkout (`run_in_checkout`): git add, commit, push,
   stash, switching branches, installing dependencies. It asks before each command (showing why),
   read-only git commands run without asking, and `settings.checkout_commands: ask|allow|off`

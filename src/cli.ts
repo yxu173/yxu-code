@@ -43,6 +43,9 @@ Usage:
                             -c (--continue) continues this repo's latest session,
                             -s <id> (--session) a given one;
                             --issue 123|owner/repo#123|URL|linear:ENG-12 works on an issue
+  yxu orchestrator [prompt] | set <setting> <value> [--local|--user] | unset <setting>
+                            how the orchestrator works: model, effort, budget, turns,
+                            provider, agent, user-settings, instructions; prompt shows its instructions
   yxu sessions [--all|--here] [--json] | rm <id> | rename <id> <title>
                             saved sessions: this repo's, every repo's, or this folder's
   yxu resume [id|last] [--all]
@@ -427,6 +430,48 @@ async function summarizeDetached([id, sessionId, turn]: string[]) {
   if (conv.summary || !conv.adopt(conv.state.id, { sessionId: r.sessionId, afterTurn: Number(turn), preTokens: r.compaction?.preTokens, postTokens: r.compaction?.postTokens })) return;
   file.conversation = conv.state;
   saveSession(file);
+}
+
+/** `yxu orchestrator [prompt] | set <setting> <value> [--local|--user|--project] | unset <setting>`. */
+async function orchestratorCommand(argv: string[]) {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: { local: { type: "boolean" }, user: { type: "boolean" }, project: { type: "boolean" }, workflow: { type: "string", short: "w" } },
+  });
+  const { fieldNamed, ORCHESTRATOR_FIELDS, orchestratorReport } = await import("./orchestrator-settings.ts");
+  const { saveConfigPatch } = await import("./config-edit.ts");
+  const { display } = await import("./config-layers.ts");
+  const root = repoRoot(process.cwd());
+  const cfg = loadConfig(root);
+  const [sub, name, ...rest] = positionals;
+  const layer = values.local ? "local" : values.user ? "user" : "project";
+  const names = `${ORCHESTRATOR_FIELDS.map((f) => f.name).join(", ")}`;
+  if (!sub || sub === "show") {
+    console.log(`${bold("orchestrator")}\n${orchestratorReport(cfg, root).join("\n")}`);
+    console.log(dim(`\nchange: yxu orchestrator set <setting> <value> [--local|--user]   (settings: ${names})\nprompt: yxu orchestrator prompt`));
+    return;
+  }
+  if (sub === "prompt") {
+    const wf = getWorkflow(cfg, values.workflow);
+    console.log(`${orchestratorPrompt(wf, root).trim()}\n\n${buildContextPrompt(cfg, root).text}`);
+    return;
+  }
+  const field = fieldNamed(name ?? "") ?? die(`usage: yxu orchestrator ${sub} <setting> … (settings: ${names})`);
+  let patch: { path: string[]; value: unknown }[];
+  if (sub === "set") {
+    const r = field.set(cfg, rest[0] ?? "", rest.slice(1));
+    if (typeof r === "string") die(r);
+    patch = r.sets.map((st) => ({ path: st.path, value: st.yaml === undefined ? st.value : st.yaml }));
+    if (r.warning) console.log(dim(r.warning));
+  } else if (sub === "unset") patch = [{ path: field.key.split("."), value: null }];
+  else die("usage: yxu orchestrator [show|prompt] | set <setting> <value> | unset <setting>");
+  try {
+    const file = saveConfigPatch(root, patch, layer);
+    console.log(`✓ ${field.name} ${sub === "unset" ? "back to its default" : `= ${fieldNamed(field.name)!.show(loadConfig(root))}`} in ${display(file, root)} (${layer})`);
+  } catch (e) {
+    die((e as Error).message);
+  }
 }
 
 /** `yxu sessions [--all|--here] [--json]`, `yxu sessions rm <id>`, `yxu sessions rename <id> <title>`. */
@@ -1007,6 +1052,9 @@ try {
     }
     case "fix-ci":
       await fixCiCommand(rest);
+      break;
+    case "orchestrator":
+      await orchestratorCommand(rest);
       break;
     case "sessions":
       await sessionsCommand(rest);
