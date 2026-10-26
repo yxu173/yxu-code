@@ -46,9 +46,10 @@ Usage:
   yxu show <task-id>        print the stored result and diff
   yxu apply <task-id>       merge the task branch into your current branch
   yxu discard <task-id>     delete the task worktree and branch
-  yxu init [--yes] [--pack name|none] [--agents a,b] [--force]
+  yxu init [--yes] [--template team|minimal] [--pack name|none] [--agents a,b] [--force]
                             set up this repo: finds your agent CLIs, picks models and a
-                            starter pack, writes a commented yxu.yaml
+                            starter pack, writes a commented yxu.yaml with a team of
+                            agents by role (or --template minimal: one per CLI)
   yxu add <source> [--user] [--as name] [--yes]
                             install a pack: a starter pack (python, node, rust, go),
                             github:owner/repo[/path][@ref], a git URL, or ./folder
@@ -748,9 +749,9 @@ try {
       discard(rest[0] ?? die("missing task id"));
       break;
     case "init": {
-      const { values } = parseArgs({ args: rest, options: { yes: { type: "boolean", short: "y" }, pack: { type: "string" }, agents: { type: "string" }, force: { type: "boolean" } } });
+      const { values } = parseArgs({ args: rest, options: { yes: { type: "boolean", short: "y" }, template: { type: "string", short: "t" }, pack: { type: "string" }, agents: { type: "string" }, force: { type: "boolean" } } });
       const { init } = await import("./init.ts");
-      await init({ yes: values.yes, pack: values.pack, agents: values.agents?.split(",").map((a) => a.trim()).filter(Boolean), force: values.force }, (l) => console.log(l), dim);
+      await init({ yes: values.yes, template: values.template, pack: values.pack, agents: values.agents?.split(",").map((a) => a.trim()).filter(Boolean), force: values.force }, (l) => console.log(l), dim);
       break;
     }
     case "add": {

@@ -92,8 +92,10 @@ describe("palette", () => {
 
   test("argument completion: agents, fields, values, workflows, files, tasks", () => {
     const { app, done } = setup();
-    expect(paletteFor(app, "/agent ")!.items.map((i) => i.value)).toEqual(["coder", "helper"]);
-    expect(paletteFor(app, "/agent coder ")!.items.map((i) => i.value)).toEqual(["model", "timeout", "permission", "turns"]);
+    expect(paletteFor(app, "/agent ")!.items.map((i) => i.value)).toEqual(["coder", "helper", "new", "remove"]);
+    expect(paletteFor(app, "/agent coder ")!.items.map((i) => i.value)).toEqual(["model", "cli", "role", "instructions", "permission", "timeout", "turns"]);
+    expect(paletteFor(app, "/agent coder cli ")!.items.map((i) => i.value)).toEqual(["commandcode", "opencode", "claude"]);
+    expect(paletteFor(app, "/agent new x ")!.items.map((i) => i.value)).toEqual(["commandcode", "opencode", "claude"]);
     expect(paletteFor(app, "/agent coder permission ")!.items.map((i) => i.value)).toEqual(["yolo", "accept-edits", "plan"]);
     expect(paletteFor(app, "/workflow q")!.items.map((i) => i.value)).toEqual(["quick"]);
     expect(paletteFor(app, "/context add arch")!.items.map((i) => i.value)).toEqual(["ARCHITECTURE.md"]);
@@ -225,6 +227,42 @@ describe("controlling everything", () => {
     expect(app.store.state.context.workflow).toBe("quick");
     app.runCommand("/new");
     expect(screen()).toContain("new conversation");
+    done();
+  });
+
+  test("/agent adds, removes and re-provisions agents, and /save writes them", () => {
+    const { app, screen, done, root } = setup();
+    app.runCommand("/agent new security claude sonnet");
+    app.runCommand("/agent security role Reviews auth and input handling for vulnerabilities");
+    app.runCommand("/agent security instructions Report findings with path:line. Change nothing.");
+    app.runCommand("/agent security permission plan");
+    app.runCommand("/agent coder cli claude");
+    app.runCommand("/agent helper model sonnet");
+    app.runCommand("/agent remove helper");
+    expect(app.cfg.agents.security).toMatchObject({ cli: "claude", model: "sonnet", permission: "plan", description: "Reviews auth and input handling for vulnerabilities" });
+    expect(app.cfg.agents.coder).toEqual({ cli: "claude" }); // the opencode model id went with the cli
+    expect(app.cfg.agents.helper).toBeUndefined();
+
+    app.runCommand("/agent new security opencode");
+    app.runCommand("/agent new Bad opencode");
+    app.runCommand("/agent new x acp");
+    app.runCommand("/resolver security");
+    app.runCommand("/agent remove security");
+    const s = screen();
+    expect(s).toContain('agent "security" already exists');
+    expect(s).toContain('"Bad" can\'t be an agent name');
+    expect(s).toContain("acp and generic agents need a command");
+    expect(s).toContain("security is still used by settings.resolver");
+
+    app.runCommand("/save");
+    expect(screen()).toContain("Saved");
+    const saved = readFileSync(join(root, "yxu.yaml"), "utf8");
+    expect(saved).toContain("# my settings");
+    expect(saved).not.toContain("helper"); // removed from the file that defined it, not set to null
+    const back = parseConfig(saved, "x");
+    expect(Object.keys(back.agents)).toEqual(["coder", "security"]);
+    expect(back.agents.coder).toEqual({ cli: "claude" });
+    expect(back.agents.security!.instructions).toBe("Report findings with path:line. Change nothing.");
     done();
   });
 });

@@ -596,7 +596,11 @@ export class App {
     const last = path.at(-1)!;
     if (value === undefined) delete obj[last];
     else obj[last] = value;
-    this.dirty.set(path.join("."), { path, value: yamlValue });
+    // Replacing a whole section (e.g. removing an agent) supersedes earlier changes inside it.
+    const key = path.join(".");
+    for (const k of this.dirty.keys()) if (k.startsWith(`${key}.`)) this.dirty.delete(k);
+    this.dirty.delete(key);
+    this.dirty.set(key, { path, value: yamlValue });
     this.store.set({ context: this.contextInfo() });
   }
 
@@ -708,10 +712,10 @@ export class App {
 
   listAgents() {
     const lines = Object.entries(this.cfg.agents).map(([n, a]) => {
-      const bits = [a.cli, a.model, a.permission ?? "accept-edits", a.timeout ? `timeout ${Math.round(a.timeout / 60000)}m` : "", a.max_turns ? `${a.max_turns} turns` : ""].filter(Boolean);
+      const bits = [a.cli, a.model, a.permission === "plan" ? "read-only" : (a.permission ?? "accept-edits"), a.timeout ? `timeout ${Math.round(a.timeout / 60000)}m` : "", a.max_turns ? `${a.max_turns} turns` : ""].filter(Boolean);
       return `- **${n}** — ${bits.join(" · ")}${a.description ? `. ${a.description}` : ""}`;
     });
-    this.note(`Agents (up to ${this.cfg.settings.concurrency} at once${this.cfg.settings.resolver ? `, resolver ${this.cfg.settings.resolver}` : ""}):\n${lines.join("\n")}\n\nChange with \`/agent <name> model|timeout|permission|turns <value>\`.`);
+    this.note(`Agents (up to ${this.cfg.settings.concurrency} at once${this.cfg.settings.resolver ? `, resolver ${this.cfg.settings.resolver}` : ""}):\n${lines.join("\n")}\n\nChange one with \`/agent <name> model|cli|role|instructions|permission|timeout|turns <value>\`, add one with \`/agent new <name> <cli> [model]\`, remove one with \`/agent remove <name>\`. \`/save\` keeps changes.`);
   }
 
   listTasks() {

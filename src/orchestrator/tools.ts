@@ -41,7 +41,7 @@ export function createYxuServer(ops: TaskOps) {
     async () => {
       const lines = allowed.map((name) => {
         const a = cfg.agents[name]!;
-        return `- ${name}: ${a.cli}${a.model ? ` / ${a.model}` : ""}${a.description ? ` — ${a.description}` : ""}`;
+        return `- ${name}: ${a.cli}${a.model ? ` / ${a.model}` : ""}${a.permission === "plan" ? " (read-only: its summary is the answer, no changes)" : ""}${a.description ? ` — ${a.description}` : ""}`;
       });
       const verify = cfg.settings.verify ? `\nDefault verify command: \`${cfg.settings.verify}\`` : "";
       return text(`${lines.join("\n")}\n\nUp to ${concurrency} subagents run at the same time.${verify}`);

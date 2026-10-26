@@ -3,6 +3,26 @@
 All notable changes are listed here. The project uses [semantic versioning](https://semver.org);
 before 1.0, minor versions may change the config format (with migration notes here).
 
+## Unreleased
+
+### Added
+- A starter team by role: `scout` (read-only discovery), `coder`, `builder`, `tester`, `debugger`,
+  `reviewer` (read-only), `resolver` (merge conflicts), `docs`, `expert` and `backup`, mapped onto
+  the agent CLIs you have. It is the built-in default and what `yxu init` writes
+  (`--template minimal` for one coder per CLI), with `feature`, `bugfix`, `review` and `explore`
+  workflows that use the roles.
+- Agent `instructions:`, the agent's role prompt, put before every task it gets. Read-only agents
+  (`permission: plan`) get a preamble that asks for a report instead of changes.
+- `/agent new <name> <cli> [model]`, `/agent remove <name>`, and `/agent <name> cli|role|instructions …`
+  in the interface: change an agent's provider, model and role, or add your own; `/save` keeps them.
+- A friendly message when yxu runs outside a git repository.
+
+### Changed
+- The default agents are the starter team instead of coder / heavy-coder / oc-coder / claude-coder.
+  Configs that define their own agents are unaffected.
+- A layer that moves an agent to another `cli` now keeps its role (description, instructions,
+  permission, timeout, turns, sandbox) and drops only the old CLI's settings (model, command, env, …).
+
 ## 0.1.0 (2026-10-25)
 
 The first public release: everything below is customizable from files, shareable as packs, and

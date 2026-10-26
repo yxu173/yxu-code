@@ -1,6 +1,7 @@
 /**
- * `yxu init`: find the agent CLIs on this machine, propose agents (with models from the
- * catalog), pick a starter pack for the project's language, and write a commented yxu.yaml.
+ * `yxu init`: find the agent CLIs on this machine, pick a template (the team by role, or one
+ * agent per CLI), choose models from the catalog, pick a starter pack for the project's
+ * language, and write a commented yxu.yaml.
  * Interactive in a terminal; `--yes` (or no terminal) takes every suggestion.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -13,6 +14,7 @@ import { addPack } from "./pack-install.ts";
 import { readManifest } from "./packs.ts";
 import { runSync, which } from "./platform.ts";
 import { builtinPackNames, fetchSource, parseSource } from "./sources.ts";
+import { PROVIDERS, teamYaml, type Provider } from "./team.ts";
 import { setTrust } from "./trust.ts";
 import type { CliName } from "./types.ts";
 
@@ -158,8 +160,16 @@ ${verifyLine}
 `;
 }
 
+export const TEMPLATES = {
+  team: "agents by role: scout (discovery), coder, builder, tester, debugger, reviewer, resolver (merge conflicts), docs, expert",
+  minimal: "one coder per agent CLI",
+} as const;
+export type Template = keyof typeof TEMPLATES;
+
 export interface InitOptions {
   yes?: boolean;
+  /** team (default) or minimal. */
+  template?: string;
   /** A starter pack, or "none". */
   pack?: string;
   /** Agent names from KNOWN_AGENTS to use (skips the questions about agents). */
@@ -189,14 +199,43 @@ export async function init(o: InitOptions, print: (l: string) => void, dim: (s: 
       return Boolean(p);
     });
     print("");
+    if (o.template && !(o.template in TEMPLATES)) throw new Error(`unknown template "${o.template}" (${Object.keys(TEMPLATES).join(", ")})`);
+    let template = (o.template ?? (o.agents ? "minimal" : "team")) as Template;
+    if (rl && !o.template && !o.agents) {
+      print("Templates");
+      for (const [n, d] of Object.entries(TEMPLATES)) print(`  ${n.padEnd(8)} ${dim(d)}`);
+      const t = await ask("Template", "team");
+      if (!(t in TEMPLATES)) throw new Error(`unknown template "${t}" (${Object.keys(TEMPLATES).join(", ")})`);
+      template = t as Template;
+    }
+
     let agents: AgentChoice[] = [];
-    if (o.agents) {
+    let providers: Provider[] = [];
+    if (template === "team") {
+      for (const p of PROVIDERS.filter((p) => found.some((a) => a.bin === p.bin))) {
+        if (!(await yes(`Use ${p.label} (${p.bin}) in the team?`))) continue;
+        const choice = structuredClone(p);
+        if (rl && p.models.fast) {
+          for (const tier of ["fast", "strong"] as const) {
+            const what = tier === "fast" ? "fast roles (scout, coder, docs)" : "strong roles (builder, tester, debugger, reviewer)";
+            choice.models[tier] = await pickModel({ label: `${p.id} model for ${what}`, cli: p.cli, model: p.models[tier] }, ask, print, dim);
+          }
+          if (p.cli !== "claude") choice.models.expert = choice.models.strong;
+        }
+        providers.push(choice);
+      }
+      if (!providers.length) {
+        print(found.length ? "! no CLI chosen; writing the team on Command Code as an example to edit" : "! no agent CLIs found; writing the team on Command Code as an example to edit");
+        providers = [structuredClone(PROVIDERS[0]!)];
+      }
+      if (providers.length) print(dim(`  main: ${providers[0]!.label}${providers.some((p) => p.cli === "claude") ? " · expert and resolver: Claude" : ""}${providers.length > 1 ? " · backup: another CLI" : ""}`));
+    } else if (o.agents) {
       for (const n of o.agents) agents.push(structuredClone(KNOWN_AGENTS.find((a) => a.name === n) ?? (() => { throw new Error(`unknown agent "${n}" (known: ${KNOWN_AGENTS.map((a) => a.name).join(", ")})`); })()));
     } else {
       for (const a of found) {
         if (!(await yes(`Use ${a.name} (${a.cli === "acp" ? a.command!.join(" ") : `${a.bin}${a.model ? ` · ${a.model}` : ""}`})?`))) continue;
         const choice = structuredClone(a);
-        if (rl && a.model) choice.model = await pickModel(a, ask, print, dim);
+        if (rl && a.model) choice.model = await pickModel({ label: `model for ${a.name}`, cli: a.cli, model: a.model }, ask, print, dim);
         agents.push(choice);
       }
       if (!agents.length) {
@@ -223,10 +262,10 @@ export async function init(o: InitOptions, print: (l: string) => void, dim: (s: 
       verify = (await ask("Verify command (empty: none)", guess ?? "")) || undefined;
     }
 
-    writeFileSync(path, initYaml({ agents, pack, verify }));
+    writeFileSync(path, template === "team" ? teamYaml({ providers, pack, verify }, SCHEMA_COMMENT) : initYaml({ agents, pack, verify }));
     excludeFromGit(root, "yxu.local.yaml");
     setTrust(root, true); // you wrote this config, so commands in it may run
-    print(`✓ wrote ${path}${verify ? ` (verify: ${verify})` : ""}`);
+    print(`✓ wrote ${path} (${template} template${verify ? `, verify: ${verify}` : ""})`);
     if (pack) {
       await addPack(root, pack, { scope: "project" }, { print: () => {}, dim });
       print(`✓ added the ${pack} starter pack (.yxu/packs/${pack}, pinned in yxu.lock)`);
@@ -236,7 +275,8 @@ export async function init(o: InitOptions, print: (l: string) => void, dim: (s: 
         "",
         "next:",
         ...[
-          [`yxu agent test ${agents[0]!.name}`, "check that an agent works with yxu (and is logged in)"],
+          [`yxu agent test ${template === "team" ? "coder" : agents[0]!.name}`, "check that an agent works with yxu (and is logged in)"],
+          ...(template === "team" ? [["yxu run -w explore \"how is this project organized?\"", "ask the scout a question (read-only)"]] : []),
           ["yxu doctor", "check the whole setup"],
           ["yxu", "open the interface"],
         ].map(([c, d], _i, all) => `  ${c!.padEnd(Math.max(...all.map((x) => x[0]!.length)) + 3)}${d}`),
@@ -249,11 +289,11 @@ export async function init(o: InitOptions, print: (l: string) => void, dim: (s: 
 }
 
 /** Ask for a model: Enter keeps the suggestion, `?` lists what the CLI offers. */
-async function pickModel(a: AgentChoice, ask: (q: string, def: string) => Promise<string>, print: (l: string) => void, dim: (s: string) => string): Promise<string | undefined> {
+async function pickModel(a: { label: string; cli: AgentChoice["cli"]; model?: string }, ask: (q: string, def: string) => Promise<string>, print: (l: string) => void, dim: (s: string) => string): Promise<string | undefined> {
   const { ModelCatalog } = await import("./models.ts");
   const catalog = new ModelCatalog();
   for (;;) {
-    const m = await ask(`  model for ${a.name} (? lists them)`, a.model ?? "");
+    const m = await ask(`  ${a.label} (? lists them)`, a.model ?? "");
     if (m !== "?") return m || undefined;
     if (catalog.get(a.cli).status !== "ready") await catalog.refresh(a.cli);
     const st = catalog.get(a.cli);

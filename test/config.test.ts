@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { taskPrompt } from "../src/prompts.ts";
 import { DEFAULT_YAML, getWorkflow, parseConfig, parseDuration, toProfile } from "../src/config.ts";
 import { orchestratorPrompt } from "../src/orchestrator/run.ts";
 
@@ -17,6 +18,10 @@ describe("config", () => {
     const cfg = parseConfig(DEFAULT_YAML, "default");
     expect(cfg.orchestrator.model).toBe("opus");
     expect(cfg.agents.coder).toMatchObject({ cli: "commandcode", model: "deepseek/deepseek-v4-flash" });
+    expect(Object.keys(cfg.agents)).toEqual(["scout", "coder", "builder", "tester", "debugger", "reviewer", "resolver", "docs", "expert", "backup"]);
+    expect(cfg.agents.scout).toMatchObject({ permission: "plan" });
+    expect(cfg.agents.scout!.instructions).toContain("never change it");
+    expect(cfg.settings.resolver).toBe("resolver");
     expect(toProfile(cfg.agents.coder!).timeoutMs).toBe(900_000);
     expect(cfg.settings.max_diff_chars).toBe(12_000);
   });
@@ -44,8 +49,20 @@ describe("config", () => {
   test("workflow instructions reach the orchestrator prompt", () => {
     const cfg = parseConfig(DEFAULT_YAML, "default");
     const p = orchestratorPrompt(getWorkflow(cfg, "default"));
-    expect(p).toContain("heavy-coder");
+    expect(p).toContain("`scout`");
     expect(p).toContain("yxu apply");
+  });
+});
+
+describe("task prompts", () => {
+  test("read-only agents get their own preamble; an agent's instructions come before the task", () => {
+    const edit = taskPrompt("/nonexistent", { permission: "accept-edits", instructions: "Role: coder." }, "do x");
+    expect(edit).toContain("Make the code changes directly");
+    expect(edit.indexOf("Role: coder.")).toBeLessThan(edit.indexOf("TASK:\ndo x"));
+    const ro = taskPrompt("/nonexistent", { permission: "plan" }, "find y");
+    expect(ro).toContain("Do not create, edit or delete files");
+    expect(ro).not.toContain("Make the code changes directly");
+    expect(ro.endsWith("TASK:\nfind y")).toBe(true);
   });
 });
 

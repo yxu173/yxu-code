@@ -37,7 +37,7 @@ export interface CombineOptions {
   root: string;
   taskIds: string[];
   /** Agent that resolves merge conflicts. Without one, a conflict fails the combine. */
-  resolver?: { name: string; profile: AgentProfile };
+  resolver?: { name: string; profile: AgentProfile; instructions?: string };
   signal?: AbortSignal;
   onConflict?: (files: string[], taskId: string) => void;
   onResolveStart?: (resolverTaskId: string) => void;
@@ -105,10 +105,10 @@ export async function combineTasks(opts: CombineOptions): Promise<CombineResult>
       worktree: wt,
       signal: opts.signal,
       onStart: (rid) => opts.onResolveStart?.(rid),
-      prompt: prompt(root, "conflict-resolver", resolverBase(intents.join("\n"), conflicts.join(", ")), {
+      prompt: `${opts.resolver.instructions ? `${opts.resolver.instructions.trimEnd()}\n\n` : ""}${prompt(root, "conflict-resolver", resolverBase(intents.join("\n"), conflicts.join(", ")), {
         intents: intents.join("\n"),
         conflicts: conflicts.join(", "),
-      }),
+      })}`,
     });
     usage.inputTokens += resolve.usage.inputTokens;
     usage.outputTokens += resolve.usage.outputTokens;

@@ -87,6 +87,18 @@ export const SUBAGENT_PREAMBLE = `You are a coding subagent. Complete exactly th
 - Stay within the scope of the task; other agents may be editing other parts of the code in parallel.
 - Finish with a short summary: what you changed, any assumptions, and anything left undone.`;
 
+/** The preamble for read-only agents (permission: plan): they report instead of changing code. */
+export const SUBAGENT_READONLY_PREAMBLE = `You are a read-only subagent. Complete exactly the task below by reading the code in the current directory.
+- Do not create, edit or delete files, and do not run commands that change anything.
+- Do not ask questions; make reasonable assumptions and state them.
+- Your final message is your whole answer: make it complete and concrete, with file paths and line numbers.`;
+
+/** The text before a task: the preamble (read-only agents get their own), then the agent's role. */
+export function taskPrompt(root: string, agent: { permission?: string; instructions?: string }, task: string): string {
+  const preamble = prompt(root, "subagent-preamble", agent.permission === "plan" ? SUBAGENT_READONLY_PREAMBLE : SUBAGENT_PREAMBLE).trimEnd();
+  return `${preamble}${agent.instructions ? `\n\n${agent.instructions.trimEnd()}` : ""}\n\nTASK:\n${task}`;
+}
+
 export const resolverBase = (intents: string, conflicts: string) => `You are resolving a git merge conflict in the current directory. Several tasks changed the same code in parallel:
 ${intents}
 

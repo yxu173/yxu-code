@@ -12,6 +12,28 @@ agents:
   claude-coder: { cli: claude, model: sonnet }
 ```
 
+### Roles
+
+Any agent can carry a role. `description` tells the orchestrator when to use it, `instructions`
+is put before every task it gets, and `permission: plan` makes it read-only (its summary is the
+answer; it changes nothing). The starter team (`yxu init`, see the README) is built this way:
+
+```yaml
+agents:
+  security:
+    cli: claude
+    model: sonnet
+    permission: plan
+    description: Reviews auth, input handling and secrets for vulnerabilities.
+    instructions: |
+      Role: security reviewer. Report each finding as severity, path:line, the risk and a fix.
+      Only report problems you can point to. Change nothing.
+```
+
+In the interface: `/agent new security claude sonnet`, `/agent security role …`,
+`/agent security instructions …`, `/agent security permission plan`, then `/save`.
+`/agent <name> cli <cli> [model]` moves an agent to another CLI and keeps its role.
+
 ## 2. ACP agents (recommended for anything that supports it)
 
 Any agent that speaks the [Agent Client Protocol](https://agentclientprotocol.com). yxu streams

@@ -78,11 +78,14 @@ describe("layers", () => {
     expect(config.source).toContain("yxu.yaml + yxu.local.yaml");
   });
 
-  test("changing an agent's cli replaces the whole agent", () => {
-    project();
+  test("changing an agent's cli drops its cli settings but keeps its role", () => {
+    project(TEAM.replace("timeout: 15m }", "timeout: 15m, permission: plan, instructions: Report only., env: { A: b } }"));
     local("agents:\n  coder: { cli: opencode, model: opencode/x }\n");
-    const { config } = load();
-    expect(config.agents.coder).toEqual({ cli: "opencode", model: "opencode/x" }); // no stale timeout
+    const { config, origins } = { ...load(), origins: load().config.origins! };
+    // No stale model or env from the old cli; the timeout, permission and instructions stay.
+    expect(config.agents.coder).toEqual({ cli: "opencode", model: "opencode/x", timeout: 900_000, permission: "plan", instructions: "Report only." });
+    expect(origins["agents.coder.env.A"]).toBeUndefined();
+    expect(origins["agents.coder.timeout"]).toBe("project");
   });
 
   test("null removes what a lower layer defined", () => {
@@ -145,6 +148,22 @@ describe("editing layers", () => {
     expect(readFileSync(file, "utf8")).toBe(text); // nothing written
   });
 
+  test("a removal (null) deletes from the file, and writes null only while a lower layer still sets it", () => {
+    project();
+    // local: a new cli drops the lower layers' model and command settings, so no null is needed.
+    saveConfigPatch(root, [{ path: ["agents", "coder", "cli"], value: "opencode" }, { path: ["agents", "coder", "model"], value: null }], "local");
+    expect(parseYaml(readFileSync(join(root, "yxu.local.yaml"), "utf8")).agents).toEqual({ coder: { cli: "opencode" } });
+    // A lower layer still defines reviewer: removing it here needs null.
+    saveConfigPatch(root, [{ path: ["agents", "reviewer"], value: null }, { path: ["settings", "resolver"], value: "coder" }], "local");
+    expect(parseYaml(readFileSync(join(root, "yxu.local.yaml"), "utf8")).agents).toEqual({ coder: { cli: "opencode" }, reviewer: null });
+    expect(load().config.agents.reviewer).toBeUndefined();
+    expect(load().config.agents.coder).toMatchObject({ cli: "opencode", timeout: 900_000 }); // its role fields stay
+    expect(load().config.agents.coder!.model).toBeUndefined();
+    // project: the file itself defines it, so it is simply deleted.
+    saveConfigPatch(root, [{ path: ["agents", "reviewer", "model"], value: null }], "project");
+    expect(parseYaml(readFileSync(join(root, "yxu.yaml"), "utf8")).agents.reviewer).toEqual({ cli: "claude" });
+  });
+
   test("saving to user creates ~/.config/yxu/config.yaml", () => {
     project();
     const file = saveConfigPatch(root, [{ path: ["orchestrator", "model"], value: "sonnet" }], "user");
@@ -154,11 +173,11 @@ describe("editing layers", () => {
 
   test("a new project file starts from the starter config only while no layer has agents", () => {
     saveConfigPatch(root, [{ path: ["settings", "concurrency"], value: 2 }], "project");
-    expect(readFileSync(join(root, "yxu.yaml"), "utf8")).toContain("heavy-coder");
+    expect(readFileSync(join(root, "yxu.yaml"), "utf8")).toContain("scout:");
     rmSync(join(root, "yxu.yaml"));
     user("agents:\n  mine: { cli: opencode }\n");
     saveConfigPatch(root, [{ path: ["settings", "concurrency"], value: 2 }], "project");
-    expect(readFileSync(join(root, "yxu.yaml"), "utf8")).not.toContain("heavy-coder");
+    expect(readFileSync(join(root, "yxu.yaml"), "utf8")).not.toContain("scout:");
   });
 
   test("migrate adds version: 1 below the header comment, once", () => {
