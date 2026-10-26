@@ -360,6 +360,16 @@
                 "string",
                 "number"
               ]
+            },
+            "checkout_commands": {
+              "default": "ask",
+              "description": "Commands the orchestrator runs in your own checkout (git commit, push, …): ask before each (default), allow without asking, or off",
+              "type": "string",
+              "enum": [
+                "ask",
+                "allow",
+                "off"
+              ]
             }
           }
         },

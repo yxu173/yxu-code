@@ -8,6 +8,10 @@ import { formatHookFailure, hasHooks, runHooks } from "./hooks.ts";
 import { newTaskId, runTask, Semaphore, writeTaskRecord } from "./runner.ts";
 import { taskPrompt } from "./prompts.ts";
 import { addNote } from "./task-notes.ts";
+import { alwaysRule, type PermissionRequest } from "./permissions.ts";
+
+/** Git commands that only look: they run in the checkout without asking. No chaining or redirects. */
+const READ_ONLY_GIT = /^\s*git\s+(status|diff|log|show|shortlog|blame|rev-parse|ls-files|remote(\s+-v)?|branch(\s+(-a|-v|-vv|-r|--list|--show-current))*|stash\s+list|describe|tag(\s+(-l|--list))?)(\s+[^;&|`$<>\n]*)?$/;
 import { loadRepoMap, mapSlice } from "./repomap.ts";
 import type { Asker } from "./permissions.ts";
 import { guard, untrustedYolo } from "./trust.ts";
@@ -197,6 +201,29 @@ export class TaskOps {
     this.hooks.onCombineEnd?.(result);
     this.opts.onChange?.();
     return result;
+  }
+
+  /**
+   * A command in the user's own checkout (git add/commit/push, stash, installs), for chores the
+   * user asks for. Read-only git commands run as they are; anything else needs the user's yes
+   * (settings.checkout_commands: ask), unless they allowed it for the session or for all.
+   */
+  async checkout(command: string, reason?: string): Promise<{ result?: VerifyResult; denied?: string }> {
+    const mode = this.cfg.settings.checkout_commands;
+    if (mode === "off") return { denied: "running commands in the user's checkout is turned off (settings.checkout_commands: off)" };
+    if (mode === "ask" && !READ_ONLY_GIT.test(command)) {
+      const req: PermissionRequest = { agent: "orchestrator (in your checkout)", kind: "execute", title: reason?.trim() || command, command, paths: [] };
+      if (!this.session.always.has(alwaysRule(req))) {
+        if (!this.opts.ask) return { denied: "nobody can approve it here (no terminal or interface)" };
+        const a = await this.opts.ask(req);
+        if (a === "deny") return { denied: "the user said no" };
+        if (a === "always") this.session.always.add(alwaysRule(req));
+      }
+    }
+    this.hooks.onShellStart?.({ id: "checkout", command });
+    const result = await runVerify(this.root, command, this.cfg.settings.verify_timeout, this.opts.signal);
+    this.hooks.onShellEnd?.({ id: "checkout", result });
+    return { result };
   }
 
   /** Run the verify command in a task's worktree (or the user's checkout when no task is given). */
