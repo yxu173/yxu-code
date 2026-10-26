@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { addNote } from "../task-notes.ts";
 import type { Config, Step, Workflow } from "../config.ts";
 import { condition, render, type Scope } from "../expr.ts";
 import { branchFor } from "../git.ts";
@@ -301,6 +302,7 @@ ${wfInstructions}${step.instructions ? `\nStep instructions:\n${render(step.inst
             cur.head,
           );
           ui.assistantText(`review round ${round}: ${review.approved ? "approved" : "changes requested"} — ${review.summary}`);
+          addNote(root, cur.head, { kind: "review", by: "orchestrator", approved: review.approved, summary: review.summary });
           if (review.approved || !review.fixes.length) {
             return {
               ok: review.approved,

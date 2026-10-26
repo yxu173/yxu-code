@@ -7,11 +7,14 @@ import { loadLayers } from "./config-layers.ts";
 import { buildContextPrompt, compactSettings, formatTokens, settingSources, worthCompacting } from "./context.ts";
 import { applyWithHooks, discardTask } from "./actions.ts";
 import { combineTasks, readTaskRecord } from "./combine.ts";
-import { repoRoot } from "./git.ts";
+import { branchFor, repoRoot, tryGit } from "./git.ts";
 import { Session, TaskOps } from "./ops.ts";
 import { runPipeline } from "./orchestrator/pipeline.ts";
 import { compactConversation, orchestratorPrompt, runOrchestrator, sessionPath, type OrchestratorRender, type RunOutcome } from "./orchestrator/run.ts";
 import { Conversation, loadConversation, saveConversation } from "./conversation.ts";
+import { issueGoal, resolveIssue, type Issue } from "./github.ts";
+import { defaultBase, draftPr, openPr, recentTasks, tagIssue } from "./pr.ts";
+import { fixCi } from "./fix-ci.ts";
 import { spawn } from "node:child_process";
 import { createYxuServer, SERVER_NAME, TOOL_NAMES } from "./orchestrator/tools.ts";
 import { claudeExecutable, isCompiled, runAttached, runSync, VERSION, which } from "./platform.ts";
@@ -35,7 +38,14 @@ Usage:
   yxu run "<goal>" [-w workflow] [--model M] [--budget USD] [-i name=value]... [--yes] [-c]
                             Claude (Opus) plans and delegates to your local agents;
                             pipelines take --input values, --yes approves their gates;
-                            -c (--continue) continues the last conversation in this repo
+                            -c (--continue) continues the last conversation in this repo;
+                            --issue 123|owner/repo#123|URL|linear:ENG-12 works on an issue
+  yxu pr [task] [--title T] [--base B] [--branch name] [--draft] [--dry-run]
+                            push a task's branch and open a pull request: what each agent
+                            did, checks, review findings, "Closes #issue" (needs gh)
+  yxu fix-ci <pr> [--agent name] [--rounds n] [--yes] [--no-push]
+                            read a PR's failing CI logs, let the debugger fix them on the
+                            PR's branch, verify, and push the fix
   yxu chat ["<first message>"] [-w workflow] [--model M] [--allow-edits] [--user-settings] [-p]
                             interactive Claude Code with the yxu tools
   yxu mcp [-w workflow]     stdio MCP server with the yxu tools (for any MCP client)
@@ -217,6 +227,7 @@ async function run(argv: string[]) {
       input: { type: "string", short: "i", multiple: true },
       yes: { type: "boolean", short: "y" },
       continue: { type: "boolean", short: "c" },
+      issue: { type: "string" },
     },
   });
   let goal = positionals.join(" ").trim();
@@ -265,7 +276,18 @@ async function run(argv: string[]) {
     if (x.workflow) workflow = x.workflow;
     if (x.kind === "workflow") for (const [k, v] of Object.entries(x.inputs)) inputs[k] ??= v;
   }
-  if (!goal && workflow.mode !== "pipeline") die('missing goal, e.g. yxu run "add a --verbose flag"');
+  // --issue: the issue (text, comments, files it mentions) is the goal; anything typed is added to it.
+  let issue: Issue | undefined;
+  if (values.issue) {
+    try {
+      issue = await resolveIssue(root, cfg, values.issue);
+    } catch (e) {
+      die((e as Error).message);
+    }
+    console.log(dim(`issue ${issue.id}: ${issue.title}${issue.url ? ` (${issue.url})` : ""}`));
+    goal = issueGoal(root, issue, goal);
+  }
+  if (!goal && workflow.mode !== "pipeline") die('missing goal, e.g. yxu run "add a --verbose flag" (or --issue 123)');
   if (Object.keys(inputs).length && workflow.mode !== "pipeline") die(`--input is for pipeline workflows; "${workflow.name}" is ${workflow.mode}`);
   const outcome = await execute(goal, workflow, inputs);
   process.exit(outcome.ok ? 0 : 2);
@@ -296,6 +318,7 @@ async function run(argv: string[]) {
         ? runPipeline({ goal, cfg, workflow, root, abort: ac, render: r.render, inputs, gate: cliGate(values.yes), session })
         : runOrchestrator({ goal, cfg, workflow, root, abort: ac, render: r.render, session, resume: next.resume, preamble: next.preamble }),
     );
+    if (issue) tagIssue(root, outcome.session.tasks.keys(), issue);
     if (auto && !outcome.cancelled) await rememberConversation(root, cfg, conv, { goal, outcome, usedSummary: next.usesSummary, continuing: Boolean(values.continue) });
 
     // The final report is usually the last assistant message, already printed above.
@@ -393,6 +416,70 @@ function printApplyHints(tips: { taskId: string; agent: string; includes: number
   for (const t of tips) {
     console.log(`  yxu show ${t.taskId}    ${dim(`# ${t.agent}${t.includes ? `, includes ${t.includes} earlier task(s)` : ""}`)}`);
     console.log(`  yxu apply ${t.taskId}`);
+    console.log(`  yxu pr ${t.taskId}       ${dim("# or open a pull request with it")}`);
+  }
+}
+
+/** `yxu pr [task]`: push a task's branch and open a pull request describing the work. */
+async function prCommand(argv: string[]) {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: { title: { type: "string" }, base: { type: "string" }, branch: { type: "string" }, draft: { type: "boolean" }, "dry-run": { type: "boolean" } },
+  });
+  const root = repoRoot(process.cwd());
+  const taskId = positionals[0] ?? recentTasks(root).find((id) => tryGit(root, "rev-parse", "--verify", "--quiet", branchFor(id)).ok);
+  if (!taskId) die("no task with changes; run something first, or name a task: yxu pr <task>");
+  try {
+    if (values["dry-run"]) {
+      const d = draftPr(root, taskId, { title: values.title });
+      console.log(`${bold(d.title)}
+${dim(`branch ${values.branch ?? d.branch} → ${values.base ?? defaultBase(root)}`)}
+
+${d.body}`);
+      return;
+    }
+    const url = openPr(root, taskId, { title: values.title, base: values.base, branch: values.branch, draft: values.draft }, (l) => console.log(dim(l)));
+    console.log(`✓ ${url}`);
+  } catch (e) {
+    die((e as Error).message);
+  }
+}
+
+/** `yxu fix-ci <pr>`: an agent fixes a pull request's failing CI, then the fix is pushed. */
+async function fixCiCommand(argv: string[]) {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: { agent: { type: "string" }, rounds: { type: "string" }, yes: { type: "boolean", short: "y" }, "no-push": { type: "boolean" }, set: { type: "string", multiple: true } },
+  });
+  const pr = positionals[0] ?? die("usage: yxu fix-ci <pr number or url> [--agent name] [--rounds n] [--yes] [--no-push]");
+  const root = repoRoot(process.cwd());
+  const cfg = loadConfig(root, { sets: values.set });
+  const ac = new AbortController();
+  process.once("SIGINT", () => {
+    console.error("\n✗ cancelling…");
+    ac.abort();
+    killAllSubagents();
+  });
+  const confirmPush = async (message: string) => {
+    if (values["no-push"]) return false;
+    if (values.yes) return true;
+    if (!process.stdin.isTTY) return false;
+    const { createInterface } = await import("node:readline/promises");
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      return /^(y|yes|)$/i.test((await rl.question(`△ ${message} [Y/n] `)).trim());
+    } finally {
+      rl.close();
+    }
+  };
+  try {
+    const r = await fixCi(root, cfg, pr, { agent: values.agent, rounds: values.rounds ? Number(values.rounds) : undefined, confirmPush, print: (l) => console.log(l), hooks: makeRenderer(cfg).render.hooks, signal: ac.signal });
+    console.log(`${r.status === "failed" ? "✗" : "✓"} ${r.message}`);
+    process.exit(r.status === "failed" ? 2 : 0);
+  } catch (e) {
+    die((e as Error).message);
   }
 }
 
@@ -785,6 +872,12 @@ try {
       break;
     case "run":
       await run(rest);
+      break;
+    case "pr":
+      await prCommand(rest);
+      break;
+    case "fix-ci":
+      await fixCiCommand(rest);
       break;
     case "__summarize":
       await summarizeDetached(rest);

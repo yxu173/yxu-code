@@ -294,8 +294,24 @@ function memoryBackend(getSession: () => Session) {
       gone.add(id);
       return { ok: true, message: `discarded ${id}` };
     },
+    github: {
+      issue: async (ref) => {
+        github.calls.push(`issue ${ref}`);
+        return { goal: `Resolve GitHub issue #7: Crash\n\nAlso: ${ref.split(" ").slice(1).join(" ")}`, issue: { source: "github", ref: "7", id: "#7", title: "Crash", closes: "#7" } };
+      },
+      pullRequest: (id) => {
+        github.calls.push(`pr ${id}`);
+        return "https://github.com/acme/app/pull/9";
+      },
+      fixCi: async (pr, o) => {
+        const pushed = (await o.confirmPush?.("push 1 commit(s) fixing CI to origin/feature (#5)?")) ?? false;
+        github.calls.push(`fix-ci ${pr} pushed=${pushed}`);
+        return { status: "fixed", pushed, message: pushed ? "pushed 1 commit(s) to origin/feature" : "not pushed" };
+      },
+    },
   };
-  return { backend, applied };
+  const github = { calls: [] as string[] };
+  return { backend, applied, github };
 }
 
 function makeApp(engine: Engine) {
@@ -319,7 +335,7 @@ function makeApp(engine: Engine) {
     app.render();
     return strip(frame.rows.join("\n"));
   };
-  return { app, screen, applied: mem.applied, exited: () => exited };
+  return { app, screen, applied: mem.applied, github: mem.github, exited: () => exited };
 }
 
 const tick = () => Bun.sleep(5);
@@ -361,6 +377,34 @@ describe("App interaction", () => {
     expect(calls.at(-1)).toEqual({ goal: "And now docs", resume: "sess-1" });
     app.input("\x1b");
     await app.idle();
+    app.dispose();
+  });
+
+  test("/issue starts a run from an issue; [p] opens a pull request; /fix-ci asks before pushing", async () => {
+    const { engine, release, calls } = controllableEngine();
+    const { app, screen, github } = makeApp(engine);
+    app.input("/issue 7 keep it small\r");
+    await tick();
+    expect(github.calls[0]).toBe("issue 7 keep it small");
+    expect(calls.at(-1)!.goal).toBe("Resolve GitHub issue #7: Crash\n\nAlso: keep it small");
+    expect(screen()).toContain("Issue #7: Crash");
+    release();
+    await app.idle();
+    expect(screen()).toContain("[p] pull request");
+    app.input("p");
+    await tick();
+    expect(github.calls[1]).toBe("pr t1");
+    expect(screen()).toContain("Pull request: https://github.com/acme/app/pull/9");
+
+    app.input("/fix-ci 5\r");
+    await tick();
+    expect(app.store.state.gate?.stepId).toBe("push");
+    expect(screen()).toContain("push 1 commit(s) fixing CI to origin/feature (#5)?");
+    app.input("y");
+    await app.idle();
+    await tick();
+    expect(github.calls[2]).toBe("fix-ci 5 pushed=true");
+    expect(screen()).toContain("pushed 1 commit(s) to origin/feature");
     app.dispose();
   });
 

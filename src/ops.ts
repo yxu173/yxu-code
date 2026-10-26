@@ -7,6 +7,7 @@ import { branchFor, collectChanges, createWorktree, git, removeWorktree, worktre
 import { formatHookFailure, hasHooks, runHooks } from "./hooks.ts";
 import { newTaskId, runTask, Semaphore, writeTaskRecord } from "./runner.ts";
 import { taskPrompt } from "./prompts.ts";
+import { addNote } from "./task-notes.ts";
 import type { Asker } from "./permissions.ts";
 import { guard, untrustedYolo } from "./trust.ts";
 import { emptyUsage, type AgentEvent, type TaskResult } from "./types.ts";
@@ -104,9 +105,11 @@ export class TaskOps {
     return { baseRef: prev.branch }; // undefined when the earlier task made no changes → start from HEAD
   }
 
-  async delegate(agent: string, task: string, buildOn?: string): Promise<TaskResult> {
-    const base = this.check(agent, buildOn);
-    if ("error" in base) throw new Error(base.error);
+  /** `from` starts the task from any git ref instead (e.g. a pull request's head), with `title` as its commit message. */
+  async delegate(agent: string, task: string, buildOn?: string, from?: { ref: string; title?: string }): Promise<TaskResult> {
+    const checked = this.check(agent, buildOn);
+    if ("error" in checked) throw new Error(checked.error);
+    const base = from ? { baseRef: from.ref } : checked;
     const def = this.cfg.agents[agent]!;
     if (def.command) guard(this.cfg, `agents.${agent}.command`, `agent ${agent}'s command \`${def.command.join(" ")}\``);
     return this.slots.run(async () => {
@@ -118,7 +121,7 @@ export class TaskOps {
         agentName: agent,
         profile,
         prompt: taskPrompt(this.root, { permission: profile.permission, instructions: def.instructions }, task),
-        title: task,
+        title: from?.title ?? task,
         cwd: this.root,
         baseRef: base.baseRef,
         signal: this.opts.signal,
@@ -129,6 +132,10 @@ export class TaskOps {
       });
       if (result.branch && hasHooks(this.cfg, "after_task")) await this.afterTask(result);
       this.session.tasks.set(result.taskId, { ...result, prompt: task, parents: buildOn ? [buildOn] : [] });
+      // A read-only agent looking at a task (a reviewer): its report belongs to that task (yxu pr shows it).
+      if (buildOn && profile.permission === "plan" && result.ok && result.summary.trim()) {
+        addNote(this.root, buildOn, { kind: "review", by: agent, summary: result.summary, taskId: result.taskId });
+      }
       this.hooks.onDelegateEnd?.(result);
       this.opts.onChange?.();
       return result;
@@ -198,6 +205,7 @@ export class TaskOps {
     this.hooks.onVerifyStart?.(cmd, taskId);
     const result = await runVerify(cwd, cmd, this.cfg.settings.verify_timeout, this.opts.signal);
     this.hooks.onVerifyEnd?.(result, taskId);
+    if (taskId) addNote(this.root, taskId, { kind: "verify", command: cmd, ok: result.ok, exitCode: result.exitCode, durationMs: result.durationMs, tail: result.output.split("\n").slice(-30).join("\n") });
     return result;
   }
 

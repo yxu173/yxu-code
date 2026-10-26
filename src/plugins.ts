@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSyn
 import { basename, dirname, join, sep } from "node:path";
 import { userConfigDir } from "./config-layers.ts";
 import { installedPacks } from "./packs.ts";
-import { PLUGIN_API_VERSION, type Plugin, type PluginAgent, type PluginCommand, type PluginContext, type PluginHooks, type PluginOrchestrator, type PluginPanel } from "./plugin-api.ts";
+import { PLUGIN_API_VERSION, type Plugin, type PluginAgent, type PluginCommand, type PluginContext, type PluginHooks, type PluginIssueSource, type PluginOrchestrator, type PluginPanel } from "./plugin-api.ts";
 import { shellArgv, start } from "./platform.ts";
 import { integrity } from "./sources.ts";
 
@@ -42,9 +42,10 @@ export interface PluginRegistry {
   hooks: { plugin: string; hooks: PluginHooks }[];
   agents: Map<string, { plugin: string; agent: PluginAgent }>;
   orchestrators: Map<string, { plugin: string; orchestrator: PluginOrchestrator }>;
+  issues: Map<string, { plugin: string; source: PluginIssueSource }>;
 }
 
-export const emptyRegistry = (): PluginRegistry => ({ entries: [], commands: [], panels: [], hooks: [], agents: new Map(), orchestrators: new Map() });
+export const emptyRegistry = (): PluginRegistry => ({ entries: [], commands: [], panels: [], hooks: [], agents: new Map(), orchestrators: new Map(), issues: new Map() });
 
 const NAME = /^[a-z][a-z0-9-]*$/;
 const ENTRY = /^([a-z][a-z0-9-]*)\.(ts|js|mjs)$/;
@@ -143,6 +144,7 @@ export function checkPlugin(mod: unknown, file: string): Plugin {
   list(p.panel, "panel", (s) => (!s || typeof s.title !== "string" || !s.title ? "each section needs a title" : typeof s.render !== "function" ? `section ${s.title} needs render(ctx)` : undefined));
   list(p.agents, "agents", (a) => (!a || !NAME.test(a.cli) ? "each agent needs a cli name (lowercase words)" : ["commandcode", "opencode", "claude", "acp", "generic"].includes(a.cli) ? `cli "${a.cli}" is built in` : typeof a.command !== "function" || typeof a.parse !== "function" ? `agent ${a.cli} needs command() and parse()` : undefined));
   list(p.orchestrators, "orchestrators", (o) => (!o || !NAME.test(o.name) ? "each orchestrator needs a name" : ["claude", "agent"].includes(o.name) ? `orchestrator "${o.name}" is built in` : typeof o.ask !== "function" ? `orchestrator ${o.name} needs ask()` : undefined));
+  list(p.issues, "issues", (x) => (!x || !NAME.test(x.name) ? "each issue source needs a name (lowercase words)" : ["github", "http", "https"].includes(x.name) ? `issue source "${x.name}" is built in` : typeof x.fetch !== "function" ? `issue source ${x.name} needs fetch(id, ctx)` : undefined));
   if (p.hooks !== undefined && (typeof p.hooks !== "object" || Object.entries(p.hooks).some(([k, f]) => typeof f !== "function" || !["before_run", "after_task", "before_apply", "on_failure", "on_complete"].includes(k)))) {
     throw bad("hooks must map before_run, after_task, before_apply, on_failure or on_complete to functions");
   }
@@ -183,6 +185,10 @@ export function loadPlugins(root: string, env: NodeJS.ProcessEnv = process.env):
         const other = reg.orchestrators.get(o.name);
         if (other) throw new Error(`orchestrator "${o.name}" is already added by plugin ${other.plugin}`);
       }
+      for (const x of plugin.issues ?? []) {
+        const other = reg.issues.get(x.name);
+        if (other) throw new Error(`issue source "${x.name}" is already added by plugin ${other.plugin}`);
+      }
       entry.plugin = plugin;
       entry.status = "loaded";
       for (const c of plugin.commands ?? []) reg.commands.push({ plugin: plugin.name, command: c });
@@ -190,6 +196,7 @@ export function loadPlugins(root: string, env: NodeJS.ProcessEnv = process.env):
       if (plugin.hooks) reg.hooks.push({ plugin: plugin.name, hooks: plugin.hooks });
       for (const a of plugin.agents ?? []) reg.agents.set(a.cli, { plugin: plugin.name, agent: a });
       for (const o of plugin.orchestrators ?? []) reg.orchestrators.set(o.name, { plugin: plugin.name, orchestrator: o });
+      for (const x of plugin.issues ?? []) reg.issues.set(x.name, { plugin: plugin.name, source: x });
     } catch (e) {
       entry.status = "error";
       entry.error = (e as Error).message;

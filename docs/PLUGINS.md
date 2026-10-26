@@ -141,6 +141,21 @@ orchestrator:
 `ask` answers one structured question per pipeline `plan` or `review` step. yxu validates the
 answer against the schema.
 
+### Issue sources
+
+```ts
+issues: [{
+  name: "linear",
+  fetch: async (id, ctx) => {
+    const x = await getLinearIssue(id); // your API call
+    return { id: x.identifier, title: x.title, body: x.description, url: x.url, labels: x.labels, comments: x.comments };
+  },
+}]
+```
+
+`yxu run --issue linear:ENG-12` (and `/issue linear:ENG-12`) makes the issue the goal, and
+`yxu pr` links it in the pull request.
+
 ## Orchestrator providers
 
 Pipelines don't need Claude. `orchestrator.provider` decides who answers their plan and review
