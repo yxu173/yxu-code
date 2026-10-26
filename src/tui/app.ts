@@ -15,7 +15,7 @@ import { getWorkflow, orchestratorLabel, type Config, type Workflow } from "../c
 import { branchFor, excludeYxuDir, tryGit } from "../git.ts";
 import { Session } from "../ops.ts";
 import { runPipeline } from "../orchestrator/pipeline.ts";
-import { Conversation } from "../conversation.ts";
+import { Conversation, type TurnRecord } from "../conversation.ts";
 import { ago, samePath, describe as describeSession, findSession, listSessions, newSession, restoreTasks, saveSession, tildePath, titleFrom, type SessionFile } from "../sessions.ts";
 import { liveTask, liveTasks, onLiveChange, type LiveControl } from "../runner.ts";
 import { buildRepoMap, loadRepoMap, mapSlice, overviewText, type RepoMap } from "../repomap.ts";
@@ -57,6 +57,8 @@ export interface Engine {
     resume?: string;
     /** Text before the goal: what happened since a background summary that `resume` points at. */
     preamble?: string;
+    /** The conversation as yxu recorded it (rebuilds memory if `resume` is gone). */
+    history?: TurnRecord[];
     /** The live config (context/compact settings can change during a session). */
     cfg: Config;
     /** Pipeline inputs (from /run or a command). */
@@ -107,11 +109,11 @@ export function gitBackend(root: string, cfg: () => Config): TaskBackend {
 
 export function productionEngine(root: string): Engine {
   return {
-    run: ({ goal, workflow, render, abort, session, resume, preamble, cfg, inputs, gate }) =>
+    run: ({ goal, workflow, render, abort, session, resume, preamble, history, cfg, inputs, gate }) =>
       withRunHooks(cfg, root, { goal, workflow: workflow.name, session, signal: abort.signal }, () =>
         workflow.mode === "pipeline"
           ? runPipeline({ goal, cfg, workflow, root, render, abort, session, inputs, gate })
-          : runOrchestrator({ goal, cfg, workflow, root, render, abort, session, resume, preamble }),
+          : runOrchestrator({ goal, cfg, workflow, root, render, abort, session, resume, preamble, history }),
       ),
     compact: ({ cfg, sessionId, instructions, abort, render, fork }) => compactConversation({ cfg, root, sessionId, instructions, abort, render, fork }),
   };
@@ -1397,6 +1399,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
         session: this.session,
         resume: next.resume,
         preamble: next.preamble,
+        history: this.conv.state.log,
         cfg: this.cfg,
         inputs: run?.inputs,
         gate: (message, stepId) => this.askGate(message, stepId),
@@ -1429,6 +1432,9 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
 
     if (outcome) {
       s.state.cost.orchestrator += outcome.costUsd;
+      if (remember && outcome.memoryRebuilt) {
+        s.add({ kind: "notice", tone: "attention", text: "This session's conversation history was gone (neither yxu's copy nor Claude Code's had it), so the orchestrator continued from yxu's record of its turns." });
+      }
       if (remember) {
         this.conv.finish({ goal, finalText: outcome.finalText, sessionId: outcome.sdkSessionId, usedSummary: next.usesSummary });
         this.persist();
