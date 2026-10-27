@@ -261,6 +261,7 @@ export async function runOrchestrator(opts: {
     signal: opts.abort.signal,
     hooks: render.hooks,
     ask: render.ask,
+    goal: opts.goal,
   });
 
   if (cfg.context.repo_map) await buildRepoMap(root).catch(() => undefined); // incremental: only changed files are read

@@ -125,6 +125,7 @@ export async function runPipeline(opts: PipelineOptions): Promise<RunOutcome> {
     signal: abort.signal,
     hooks: ui.hooks,
     ask: ui.ask,
+    goal: opts.goal,
   });
   const log: string[] = [];
   let costUsd = 0;
