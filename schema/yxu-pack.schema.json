@@ -361,6 +361,21 @@
                 "number"
               ]
             },
+            "permissions": {
+              "default": "ask",
+              "description": "How much runs without asking: ask (ask for approval), auto (a classifier approves or blocks each action, asks when unsure), full (everything runs; agents get yolo)",
+              "type": "string",
+              "enum": [
+                "ask",
+                "auto",
+                "full"
+              ]
+            },
+            "auto_model": {
+              "default": "haiku",
+              "description": "The model that approves or blocks actions in permissions: auto",
+              "type": "string"
+            },
             "checkout_commands": {
               "default": "ask",
               "description": "Commands the orchestrator runs in your own checkout (git commit, push, …): ask before each (default), allow without asking, or off",

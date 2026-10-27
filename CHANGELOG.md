@@ -3,6 +3,14 @@
 All notable changes are listed here. The project uses [semantic versioning](https://semver.org);
 before 1.0, minor versions may change the config format (with migration notes here).
 
+## Unreleased
+
+### Added
+- Permissions for the session: Ask for approval (default), Approve for me (a classifier approves
+  or blocks each action, asking you when unsure, with a quick path for obvious cases), and Full
+  access (everything runs; agents get yolo). `/permissions`, shift+tab to cycle, the header shows
+  the mode, `settings.permissions`, `yxu run --permissions`. An untrusted repo can't raise it.
+
 ## 0.1.3 (2026-10-26)
 
 ### Added

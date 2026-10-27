@@ -17,6 +17,7 @@ import { branchFor, excludeYxuDir, tryGit } from "../git.ts";
 import { Session } from "../ops.ts";
 import { runPipeline } from "../orchestrator/pipeline.ts";
 import { Conversation, type TurnRecord } from "../conversation.ts";
+import { ACCESS, ACCESS_MODES, accessMode } from "../access.ts";
 import { attach, clipboardImage, findImagePaths, size as imageSize, type Attachment } from "../images.ts";
 import { fieldNamed, ORCHESTRATOR_FIELDS, orchestratorReport } from "../orchestrator-settings.ts";
 import { ago, pendingIn, samePath, describe as describeSession, findSession, listSessions, newSession, restoreTasks, saveSession, tildePath, titleFrom, type SessionFile } from "../sessions.ts";
@@ -515,6 +516,8 @@ export class App {
         return this.scrollBy(this.page());
       case "pagedown":
         return this.scrollBy(-this.page());
+      case "backtab":
+        return this.cycleAccess();
       case "tab":
         e.insert("  ");
         break;
@@ -1697,6 +1700,16 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
           s.upsertTask({ taskId, agent, state: "running", title: first, files: 0, pending: false });
           slots(1);
         },
+        onVerdict: (req, v) => {
+          const what = req.command ? `\`${req.command}\`` : `${req.kind} ${req.paths.join(", ") || req.title}`;
+          s.add(
+            v.decision === "allow"
+              ? { kind: "notice", tone: "info", text: `Approved for you: ${what} — ${v.reason}` }
+              : v.decision === "block"
+                ? { kind: "notice", tone: "attention", text: `Blocked: ${what} — ${v.reason}` }
+                : { kind: "notice", tone: "attention", text: `Not sure about ${what} (${v.reason}); asking you.` },
+          );
+        },
         onAgentEvent: (taskId, e) => {
           const a = this.findActivity(taskId);
           if (!a || a.state !== "running") return;
@@ -2086,6 +2099,35 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     if (r.warning) this.note(r.warning, "attention");
   }
 
+  // ── permissions ───────────────────────────────────────────────────────────
+
+  /** `/permissions [ask|auto|full]`, or shift+tab to cycle: how much runs without asking. */
+  setAccess(arg = "") {
+    const current = accessMode(this.cfg);
+    if (!arg) {
+      const rows = ACCESS_MODES.map((m) => `- ${m === current ? "**✓ " : ""}${ACCESS[m].label}${m === current ? "**" : ""} (\`/permissions ${m}\`) — ${ACCESS[m].about}`);
+      return this.note(
+        [
+          "**Permissions**",
+          ...rows,
+          "",
+          "shift+tab cycles them. Approve for me covers commands in your checkout and ACP agents' requests; Command Code, OpenCode and Claude agents keep their own permission setting (full access gives them yolo). `/save` keeps the choice.",
+        ].join("\n"),
+      );
+    }
+    if (!(ACCESS_MODES as readonly string[]).includes(arg)) return this.fail(`usage: /permissions ask|auto|full`, ACCESS_MODES.map((m) => `${m}: ${ACCESS[m].label}`).join(" · "));
+    this.setConfig(["settings", "permissions"], arg);
+    const now = accessMode(this.cfg);
+    if (now !== arg) return this.fail(`this repository's config can't be raised to ${ACCESS[arg as "auto"].label} until you trust it`, "/trust, then try again");
+    this.changed(`Permissions: ${ACCESS[now].label} — ${ACCESS[now].about}`);
+    if (now === "full") this.note("Full access: agents run any command in their worktrees and commands in your checkout run without asking. Nothing reaches your branch until you apply it, but pushes and other outside effects happen right away.", "attention");
+  }
+
+  private cycleAccess() {
+    const i = ACCESS_MODES.indexOf(accessMode(this.cfg));
+    this.setAccess(ACCESS_MODES[(i + 1) % ACCESS_MODES.length]);
+  }
+
   private mapping?: Promise<RepoMap | undefined>;
 
   /** Bring the repo map up to date in the background (only changed files are read). */
@@ -2286,6 +2328,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
       mode: this.workflow?.mode ?? "auto",
       model: orchestratorLabel(cfg),
       effort: cfg.orchestrator.effort,
+      access: accessMode(cfg),
       agents: (this.workflow?.allowed_agents ?? Object.keys(cfg.agents)).map((name) => ({ name, cli: cfg.agents[name]!.cli, model: cfg.agents[name]!.model })),
       concurrency: cfg.settings.concurrency,
       verify: cfg.settings.verify,

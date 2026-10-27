@@ -7,6 +7,7 @@ import { agentRefs, parseDuration } from "../config.ts";
 import { tryGit } from "../git.ts";
 import { which } from "../platform.ts";
 import { liveTasks } from "../runner.ts";
+import { ACCESS, ACCESS_MODES } from "../access.ts";
 import { fieldNamed, ORCHESTRATOR_FIELDS } from "../orchestrator-settings.ts";
 import { ago, listSessions } from "../sessions.ts";
 import type { CliName } from "../types.ts";
@@ -262,6 +263,14 @@ export const COMMANDS: Command[] = [
     complete: (app, i) =>
       i === 0 ? Object.entries(app.cfg.workflows).map(([n, w]) => ({ value: n, description: `${w.mode}${w.steps ? ` · ${w.steps.map((s) => s.id).join(" → ")}` : ""}` })) : [],
     run: (app, args) => app.switchWorkflow(args.join(" ").trim()),
+  },
+  {
+    name: "permissions",
+    usage: "[ask|auto|full]",
+    description: "How much runs without asking: ask for approval, approve for me, or full access (shift+tab cycles)",
+    group: "session",
+    complete: (_app, i) => (i === 0 ? ACCESS_MODES.map((m) => ({ value: m, description: `${ACCESS[m].label} — ${ACCESS[m].about}` })) : []),
+    run: (app, [m]) => app.setAccess(m ?? ""),
   },
   {
     name: "image",
