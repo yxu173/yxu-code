@@ -3,7 +3,7 @@
 All notable changes are listed here. The project uses [semantic versioning](https://semver.org);
 before 1.0, minor versions may change the config format (with migration notes here).
 
-## Unreleased
+## 0.1.4 (2026-10-31)
 
 ### Added
 - The orchestrator can spawn subagents for a session (`spawn_agent`) on a provider and model you
