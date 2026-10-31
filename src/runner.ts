@@ -1,7 +1,7 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { adapters } from "./adapters/index.ts";
-import { collectChanges, createWorktree, removeWorktree, repoRoot, tryGit, workingDiff, type Worktree } from "./git.ts";
+import { collectChanges, createWorktree, removeWorktree, repoRoot, snapshot, tryGit, workingDiff, type Worktree } from "./git.ts";
 import { runAcp } from "./acp.ts";
 import { genericCommand, genericParse } from "./adapters/generic.ts";
 import type { Asker } from "./permissions.ts";
@@ -274,7 +274,10 @@ export async function runTask(opts: RunOptions): Promise<TaskResult> {
   const root = repoRoot(opts.cwd);
   const taskId = newTaskId();
   const ownWorktree = !opts.worktree && opts.isolate !== false;
-  const wt = opts.worktree ?? (ownWorktree ? createWorktree(root, taskId, opts.baseRef) : undefined);
+  // A fresh task starts from your working tree as it is now (uncommitted changes included).
+  const wt = opts.worktree ?? (ownWorktree ? createWorktree(root, taskId, opts.baseRef ?? snapshot(root)) : undefined);
+  // Where the chain of work started: what applying it is measured against.
+  const origin = !ownWorktree || !wt ? undefined : opts.baseRef?.startsWith("yxu/") ? (readOrigin(root, opts.baseRef.slice(4)) ?? wt.base) : wt.base;
   const cwd = wt?.path ?? root;
   const spec = { id: taskId, prompt: opts.prompt, cwd };
   let argv = profile.cli === "acp" ? profile.command! : profile.cli === "generic" ? genericCommand(profile.generic!, spec, profile) : adapter!.command(spec, profile);
@@ -426,6 +429,17 @@ export async function runTask(opts: RunOptions): Promise<TaskResult> {
   let changes = { diff: "", files: [] as string[] };
   let keepWorktree = false;
   if (ownWorktree && wt) {
+    // An agent that checked out another branch (or detached HEAD) didn't make that branch's changes.
+    const on = tryGit(wt.path, "symbolic-ref", "-q", "HEAD").out;
+    if (on !== `refs/heads/${wt.branch}`) {
+      const where = on ? on.replace("refs/heads/", "") : `a detached HEAD (${tryGit(wt.path, "rev-parse", "--short", "HEAD").out})`;
+      const warning = `the agent switched its worktree to ${where}; that isn't its work, so nothing from it is kept`;
+      tryGit(wt.path, "checkout", "-f", "-q", wt.branch);
+      tryGit(wt.path, "clean", "-fdq");
+      result.summary = `${result.summary}\n\n[warning] ${warning}`.trim();
+      events.push({ kind: "error", message: warning });
+      opts.onEvent?.(taskId, { kind: "error", message: warning });
+    }
     changes = collectChanges(wt, `yxu(${opts.agentName}): ${(opts.title ?? opts.prompt).split("\n")[0]!.slice(0, 72)}`);
     // Nothing to review: drop the empty worktree and branch, keep the run record.
     keepWorktree = changes.files.length > 0;
@@ -447,7 +461,7 @@ export async function runTask(opts: RunOptions): Promise<TaskResult> {
     worktree: keepWorktree ? wt!.path : undefined,
   };
   writeFileSync(join(dir, "events.json"), JSON.stringify(events, null, 2));
-  writeTaskRecord(root, full, { prompt: opts.prompt, baseRef: opts.baseRef, argv });
+  writeTaskRecord(root, full, { prompt: opts.prompt, baseRef: opts.baseRef, argv, ...(origin ? { origin } : {}) });
   return full;
 }
 
@@ -467,6 +481,15 @@ function checkoutState(root: string): Map<string, string> {
 
 function changedSince(before: Map<string, string>, after: Map<string, string>): string[] {
   return [...after].filter(([p, v]) => before.get(p) !== v).map(([p]) => p);
+}
+
+/** The commit a task's chain of work started from (recorded at run time). */
+export function readOrigin(root: string, id: string): string | undefined {
+  try {
+    return (JSON.parse(readFileSync(join(runDir(root, id), "result.json"), "utf8")) as { origin?: string }).origin;
+  } catch {
+    return undefined;
+  }
 }
 
 export function writeTaskRecord(root: string, r: TaskResult, extra: Record<string, unknown> = {}) {

@@ -61,7 +61,9 @@ export async function combineTasks(opts: CombineOptions): Promise<CombineResult>
 
   const started = Date.now();
   const id = newTaskId();
-  const wt = createWorktree(root, id, "HEAD");
+  // Start where the parents' chain started (your working tree at the time), so merging them is clean.
+  const origin = (records[0] as TaskRecord & { origin?: string }).origin ?? "HEAD";
+  const wt = createWorktree(root, id, origin);
   const usage = emptyUsage();
   let costUsd = 0;
   const resolved: string[] = [];
@@ -147,6 +149,6 @@ export async function combineTasks(opts: CombineOptions): Promise<CombineResult>
     worktree: wt.path,
     parents: taskIds,
   };
-  writeTaskRecord(root, result, { parents: taskIds, prompt: summary });
+  writeTaskRecord(root, result, { parents: taskIds, prompt: summary, ...(origin !== "HEAD" ? { origin } : { origin: wt.base }) });
   return result;
 }

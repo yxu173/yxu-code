@@ -41,7 +41,7 @@ export const branchFor = (taskId: string) => `yxu/${taskId}`;
 export const worktreeFor = (root: string, taskId: string) => join(root, ".yxu", "worktrees", taskId);
 
 /** yxu's runtime files. The rest of .yxu/ (workflows, commands, prompts) is meant to be committed. */
-export const RUNTIME_PATHS = [".yxu/worktrees/", ".yxu/runs/", ".yxu/sessions/", ".yxu/history.jsonl", ".yxu/repomap.json", ".yxu/images/"];
+export const RUNTIME_PATHS = [".yxu/worktrees/", ".yxu/runs/", ".yxu/sessions/", ".yxu/history.jsonl", ".yxu/repomap.json", ".yxu/images/", ".yxu/undo.json"];
 
 /** Keep yxu's runtime files out of the user's `git status` without touching their .gitignore. */
 export function excludeYxuDir(root: string) {
@@ -55,6 +55,53 @@ export function excludeYxuDir(root: string) {
   const kept = lines.join("\n");
   mkdirSync(dirname(exclude), { recursive: true });
   writeFileSync(exclude, `${kept}${kept && !kept.endsWith("\n") ? "\n" : ""}${missing.map((p) => `${p}\n`).join("")}`);
+}
+
+// ── snapshots: your working tree as a commit ───────────────────────────────
+
+const snapshots = new Map<string, { tree: string; commit: string }>();
+
+/**
+ * Your working tree as it is now, uncommitted and untracked changes included (ignored files and
+ * yxu's own runtime files left out), as a commit on top of HEAD. Tasks start from it, so agents
+ * see your current code. Nothing in your checkout changes: a temporary index is used. The same
+ * tree gives the same commit, so tasks started together share one base.
+ */
+export function snapshot(root: string): string {
+  const head = tryGit(root, "rev-parse", "--verify", "--quiet", "HEAD");
+  excludeYxuDir(root);
+  const gitDir = resolve(root, git(root, "rev-parse", "--git-dir"));
+  const index = join(gitDir, `yxu-snapshot-${process.pid}.index`);
+  const env = { ...process.env, GIT_INDEX_FILE: index };
+  const run = (...args: string[]) => {
+    const p = runSync(["git", ...args], { cwd: root, env });
+    if (p.code !== 0) throw new Error(`git ${args.join(" ")} failed: ${p.stderr.trim()}`);
+    return p.stdout.trim();
+  };
+  try {
+    if (head.ok) run("read-tree", head.out);
+    else run("read-tree", "--empty");
+    run("add", "-A", "--", ".");
+    const tree = run("write-tree");
+    if (head.ok && tree === git(root, "rev-parse", `${head.out}^{tree}`)) return head.out; // nothing uncommitted
+    const hit = snapshots.get(root);
+    if (hit?.tree === tree) return hit.commit;
+    const commit = runSync(["git", ...YXU_IDENTITY, "commit-tree", tree, ...(head.ok ? ["-p", head.out] : []), "-m", "yxu: snapshot of the working tree"], { cwd: root, env }).stdout.trim();
+    snapshots.set(root, { tree, commit });
+    return commit;
+  } finally {
+    try {
+      require("node:fs").rmSync(index, { force: true });
+    } catch {
+      // best effort
+    }
+  }
+}
+
+/** A file's content at a commit, or undefined if it isn't there. */
+export function fileAt(root: string, commit: string, path: string): Buffer | undefined {
+  const p = Bun.spawnSync(["git", "show", `${commit}:${path}`], { cwd: root, stdout: "pipe", stderr: "pipe" });
+  return p.exitCode === 0 ? Buffer.from(p.stdout) : undefined;
 }
 
 export interface Worktree {

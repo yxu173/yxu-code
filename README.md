@@ -53,10 +53,24 @@ yxu                # open the interface; describe a goal
 yxu --demo         # a scripted tour of the interface: no agents, no git changes, no cost
 ```
 
-A typical run: Opus reads the repo and plans, then delegates tasks to your agents in parallel
-worktrees. It checks the results (and your `verify` command), then asks you to **apply**, **view
-the diff**, decide **later** or **discard**. From scripts, use `yxu run "<goal>"`, then
-`yxu show <task>` and `yxu apply <task>`.
+A typical run: Opus reads the repo and plans, then delegates tasks to your agents. Each one works
+in its own copy of your repository (a git worktree) that starts from **your files as they are
+now**, uncommitted changes included. When the run is done, the result lands in your working tree as
+ordinary uncommitted changes, the way an agent working in place would leave them: review them with
+`git diff`, commit when you like, or **`/undo`** (`yxu undo`) to put everything back.
+
+### How results reach your files
+
+- **No commits, no merge commits, no branch switching.** Applying writes files; you commit.
+- **Your own uncommitted work is safe.** Files you didn't touch since the task started take the
+  task's version; files you edited meanwhile are merged line by line. Only lines that both of
+  you changed get conflict markers (`<<<<<<< your working tree` … `>>>>>>> task <id>`), and only
+  in those files. Binary files both sides changed are put next to yours as `<file>.yxu-theirs`.
+- **`/undo`** restores exactly what the last apply changed, and leaves files you edited since.
+- **`settings.apply`:** `auto` (default) applies when a run ends, `ask` shows the choice (apply,
+  view diff, pull request, later, discard), `manual` waits for `/apply <task>`. `yxu run --no-apply`
+  skips it once.
+- **Branches:** finished task branches stay for `yxu pr`; `yxu clean` removes them.
 
 ## The team
 

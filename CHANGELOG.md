@@ -3,6 +3,24 @@
 All notable changes are listed here. The project uses [semantic versioning](https://semver.org);
 before 1.0, minor versions may change the config format (with migration notes here).
 
+## Unreleased
+
+### Changed
+- Results land in your working tree as uncommitted changes, like an agent working in place: no
+  commit, no merge commit, no branch switch, and no "commit or stash first". Files you edited
+  meanwhile are merged three ways; only overlapping lines get conflict markers. `settings.apply`:
+  `auto` (default, applied when a run ends), `ask`, `manual`; `yxu run --no-apply`.
+- Tasks start from your working tree as it is (uncommitted and untracked changes included), so
+  agents see your current code.
+
+### Added
+- `/undo` and `yxu undo`: put back what the last apply changed (files edited since are left).
+- `yxu clean`: remove the branches of applied and discarded tasks.
+
+### Fixed
+- An agent that checked out another branch in its worktree (e.g. to look at a PR) made yxu record
+  that whole branch as the agent's changes. That branch is now ignored, with a warning.
+
 ## 0.1.3 (2026-10-26)
 
 ### Added

@@ -551,7 +551,7 @@ export const COMMANDS: Command[] = [
   {
     name: "apply",
     usage: "<task>",
-    description: "Merge a task into your branch",
+    description: "Bring a task's changes into your working tree (uncommitted; /undo puts it back)",
     group: "tasks",
     needsArgs: true,
     complete: (app, i) => (i === 0 ? taskSuggestions(app, true) : []),
@@ -648,6 +648,12 @@ export const COMMANDS: Command[] = [
     needsArgs: true,
     complete: (app, i) => (i === 1 ? agentSuggestions(app) : []),
     run: (app, [pr, agent]) => void app.fixCi(pr ?? "", agent),
+  },
+  {
+    name: "undo",
+    description: "Put back what the last apply changed in your working tree",
+    group: "tasks",
+    run: (app) => app.undoApply(),
   },
   {
     name: "discard",

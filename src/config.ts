@@ -289,12 +289,16 @@ export const ConfigSchema = z.object({
       /** Command that checks a task's result, e.g. "npm test". Used by verify steps and the verify tool. */
       verify: z.string().optional(),
       verify_timeout: Duration.default(600_000), // zod 4: defaults bypass the transform, so this is already ms
+      apply: z
+        .enum(["auto", "ask", "manual"])
+        .default("auto")
+        .describe("How results reach your working tree: auto (applied when a run ends, /undo reverts), ask (you choose: apply, diff, later, discard), manual (/apply)"),
       checkout_commands: z
         .enum(["ask", "allow", "off"])
         .default("ask")
         .describe("Commands the orchestrator runs in your own checkout (git commit, push, …): ask before each (default), allow without asking, or off"),
     })
-    .default({ max_diff_chars: 12_000, concurrency: 3, verify_timeout: 600_000, checkout_commands: "ask" }),
+    .default({ max_diff_chars: 12_000, concurrency: 3, verify_timeout: 600_000, apply: "auto", checkout_commands: "ask" }),
   context: ContextSchema,
   compact: CompactSchema,
   hooks: z
