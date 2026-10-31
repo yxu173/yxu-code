@@ -17,6 +17,7 @@ import { branchFor, excludeYxuDir, tryGit } from "../git.ts";
 import { Session } from "../ops.ts";
 import { runPipeline } from "../orchestrator/pipeline.ts";
 import { Conversation, type TurnRecord } from "../conversation.ts";
+import { spawnPool } from "../config.ts";
 import { ACCESS, ACCESS_MODES, accessMode } from "../access.ts";
 import { attach, clipboardImage, findImagePaths, size as imageSize, type Attachment } from "../images.ts";
 import { fieldNamed, ORCHESTRATOR_FIELDS, orchestratorReport } from "../orchestrator-settings.ts";
@@ -1703,6 +1704,10 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
           s.upsertTask({ taskId, agent, state: "running", title: first, files: 0, pending: false });
           slots(1);
         },
+        onSpawn: (name, def) => {
+          s.add({ kind: "notice", tone: "info", text: `Spawned **${name}** (${def.cli} · ${def.model}${def.permission === "plan" ? " · read-only" : ""}): ${def.description}` });
+          this.store.set({ context: this.contextInfo() });
+        },
         onVerdict: (req, v) => {
           const what = req.command ? `\`${req.command}\`` : `${req.kind} ${req.paths.join(", ") || req.title}`;
           s.add(
@@ -2102,6 +2107,58 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     if (r.warning) this.note(r.warning, "attention");
   }
 
+  // ── spawning ──────────────────────────────────────────────────────────────
+
+  /** `/spawn [on|off|add <cli> <model>|remove <cli> [model]|reset]`: the pool the orchestrator spawns from. */
+  spawnCommand(args: string[]) {
+    const [sub = "", cli = "", ...rest] = args;
+    const model = rest.join(" ").trim();
+    const pool = (): Record<string, string[]> => structuredClone(spawnPool(this.cfg));
+    const show = () => {
+      const p = spawnPool(this.cfg);
+      const rows = Object.entries(p).map(([c, ms]) => `- **${c}**: ${ms.map((m) => `\`${m}\``).join(", ")}`);
+      const spawned = [...this.session.spawned].map(([n, a]) => `- **${n}** — ${a.cli} · ${a.model}${a.permission === "plan" ? " · read-only" : ""}: ${a.description}`);
+      return this.note(
+        [
+          `**Spawning** ${this.cfg.spawn.enabled ? `on — the orchestrator may create up to ${this.cfg.spawn.max} subagents a session` : "off"}${this.cfg.spawn.models ? "" : " (pool taken from your agents)"}`,
+          ...(rows.length ? rows : ["- (no providers: add one)"]),
+          ...(spawned.length ? ["", "Spawned this session:", ...spawned] : []),
+          "",
+          "`/spawn add <cli> <model>` · `/spawn remove <cli> [model]` · `/spawn reset` (back to your agents' models) · `/spawn off`. `/save` keeps it.",
+        ].join("\n"),
+      );
+    };
+    switch (sub) {
+      case "":
+        return show();
+      case "on":
+      case "off":
+        this.setConfig(["spawn", "enabled"], sub === "on");
+        return this.changed(sub === "on" ? "The orchestrator may spawn subagents from your pool" : "No spawning: only configured agents");
+      case "add": {
+        if (!cli || !model) return this.fail("usage: /spawn add <cli> <model>");
+        if (cli === "acp" || cli === "generic") return this.fail(`${cli} agents need a command, so they can't be spawned`, "define them under agents in yxu.yaml");
+        const p = pool();
+        p[cli] = [...new Set([...(p[cli] ?? []), model])];
+        this.setConfig(["spawn", "models"], p);
+        return this.changed(`The orchestrator may spawn ${cli} · ${model}`);
+      }
+      case "remove": {
+        const p = pool();
+        if (!p[cli]) return this.fail(`${cli || "(none)"} isn't in the pool`);
+        p[cli] = model ? p[cli]!.filter((m) => m !== model) : [];
+        if (!p[cli]!.length) delete p[cli];
+        this.setConfig(["spawn", "models"], p);
+        return this.changed(`Removed ${model ? `${cli} · ${model}` : cli} from the spawn pool`);
+      }
+      case "reset":
+        this.setConfig(["spawn", "models"], undefined, null);
+        return this.changed("Spawn pool back to the models your agents use");
+      default:
+        return this.fail("usage: /spawn [on|off|add <cli> <model>|remove <cli> [model]|reset]");
+    }
+  }
+
   // ── permissions ───────────────────────────────────────────────────────────
 
   /** `/permissions [ask|auto|full]`, or shift+tab to cycle: how much runs without asking. */
@@ -2359,7 +2416,11 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
       model: orchestratorLabel(cfg),
       effort: cfg.orchestrator.effort,
       access: accessMode(cfg),
-      agents: (this.workflow?.allowed_agents ?? Object.keys(cfg.agents)).map((name) => ({ name, cli: cfg.agents[name]!.cli, model: cfg.agents[name]!.model })),
+      agents: [
+        ...(this.workflow?.allowed_agents ?? Object.keys(cfg.agents)).map((name) => ({ name, cli: cfg.agents[name]!.cli, model: cfg.agents[name]!.model })),
+        // Spawned by the orchestrator this session (marked +).
+        ...[...(this.session?.spawned ?? new Map())].map(([name, a]) => ({ name: `+${name}`, cli: a.cli, model: a.model })),
+      ],
       concurrency: cfg.settings.concurrency,
       verify: cfg.settings.verify,
       memory: cfg.context.memory,

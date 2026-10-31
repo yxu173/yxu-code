@@ -143,6 +143,28 @@ yxu fix-ci 45                        # the PR's CI fails: the debugger fixes it 
 - **In the interface:** `/issue 123 [more]`, `/pr <task>`, `/fix-ci <pr>`, and **[p] pull
   request** next to apply when a result is ready.
 
+### Subagents the orchestrator spawns
+
+Besides your configured team, the orchestrator can create subagents during a session, on a
+provider and model **you** chose. That could be a stronger model for a hard task, a cheaper one
+for simple ones, or a specialist it describes itself (a security reviewer, a migration writer).
+It calls `spawn_agent(name, provider, model, role, instructions?, read_only?)` and then delegates
+to the new agent like any other.
+
+```yaml
+spawn:
+  models:                        # what it may use; default: the models your agents use
+    commandcode: [deepseek/deepseek-v4-flash, deepseek/deepseek-v4-pro]
+    claude: [haiku, sonnet]
+  max: 8                         # per session
+  # enabled: false               # only configured agents
+```
+
+Anything outside the pool is refused with the allowed list, so the orchestrator can pick again.
+Spawned agents last for the session, show in the side panel with a `+`, and are announced in the
+conversation. In the interface: `/spawn` shows the pool and what was spawned; also `/spawn add
+<cli> <model>`, `/spawn remove <cli> [model]`, `/spawn reset`, `/spawn off`, then `/save`.
+
 ## Configuration
 
 Settings come from layers. A later layer wins; maps merge, lists replace, and `null` removes

@@ -6,6 +6,10 @@ before 1.0, minor versions may change the config format (with migration notes he
 ## Unreleased
 
 ### Added
+- The orchestrator can spawn subagents for a session (`spawn_agent`) on a provider and model you
+  allowed (`spawn.models`; by default the models your agents use), with a role and instructions it
+  writes, read-only if it likes; then it delegates to them by name. `spawn.max` (8), `spawn.enabled`.
+  Interface: `/spawn` (show, add, remove, reset, on, off); spawned agents in the panel (`+name`).
 - `/undo` and `yxu undo`: put back what the last apply changed (files edited since are left).
 - `yxu clean`: remove the branches of applied and discarded tasks.
 - Permissions for the session: Ask for approval (default), Approve for me (a classifier approves

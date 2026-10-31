@@ -711,6 +711,7 @@ function makeRenderer(cfg: Config) {
           : console.log(`\n${bold(`■ [${index}/${total}] ${id}`)} ${dim(note ? `${type} · ${note}` : type)}`),
     ask: cliAsker(),
     hooks: {
+      onSpawn: (name, def) => console.log(`+ ${bold(name)} ${dim(`spawned: ${def.cli} · ${def.model}${def.permission === "plan" ? " · read-only" : ""} — ${def.description}`)}`),
       onVerdict: (req, v) => {
         const what = req.command ? `\`${req.command}\`` : `${req.kind} ${req.title}`;
         console.log(v.decision === "allow" ? dim(`  ✓ approved for you: ${what} — ${v.reason}`) : v.decision === "block" ? `  ✗ blocked: ${what} — ${v.reason}` : `  ? not sure about ${what} (${v.reason})`);

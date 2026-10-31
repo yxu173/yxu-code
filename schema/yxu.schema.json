@@ -480,6 +480,42 @@
         }
       }
     },
+    "spawn": {
+      "default": {
+        "enabled": true,
+        "max": 8
+      },
+      "description": "Subagents the orchestrator creates on its own, from providers and models you choose",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "default": true,
+          "description": "Let the orchestrator create subagents for a session (spawn_agent)",
+          "type": "boolean"
+        },
+        "models": {
+          "description": "The providers and models it may spawn with, e.g. { commandcode: [deepseek/deepseek-v4-pro], claude: [sonnet] }; default: the cli/model pairs your agents use",
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "max": {
+          "default": 8,
+          "description": "Most subagents it may spawn in one session",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        }
+      }
+    },
     "hooks": {
       "description": "Shell commands at lifecycle points; they get the event as JSON on stdin",
       "type": "object",

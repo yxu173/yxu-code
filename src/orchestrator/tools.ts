@@ -2,11 +2,12 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { TaskOps } from "../ops.ts";
 import { loadRepoMap, mapSlice } from "../repomap.ts";
+import { spawnPool } from "../config.ts";
 
 export { Session, type OpsHooks as ToolHooks } from "../ops.ts";
 
 export const SERVER_NAME = "yxu";
-export const TOOL_NAMES = ["list_agents", "delegate", "delegate_parallel", "combine", "verify", "get_diff", "discard", "find_code", "run_in_checkout"].map(
+export const TOOL_NAMES = ["list_agents", "spawn_agent", "delegate", "delegate_parallel", "combine", "verify", "get_diff", "discard", "find_code", "run_in_checkout"].map(
   (t) => `mcp__${SERVER_NAME}__${t}`,
 );
 
@@ -49,7 +50,7 @@ export interface ToolWatch {
 export function createYxuServer(ops: TaskOps, watch?: ToolWatch) {
   const { cfg, allowed } = ops;
   const { concurrency } = cfg.settings;
-  const agentDesc = `Agent name. One of: ${allowed.join(", ")}`;
+  const agentDesc = `Agent name: one of ${allowed.join(", ")}, or a subagent you spawned with spawn_agent`;
 
   const listAgents = tool(
     "list_agents",
@@ -61,8 +62,32 @@ export function createYxuServer(ops: TaskOps, watch?: ToolWatch) {
         return `- ${name}: ${a.cli}${a.model ? ` / ${a.model}` : ""}${a.permission === "plan" ? " (read-only: its summary is the answer, no changes)" : ""}${a.description ? ` — ${a.description}` : ""}`;
       });
       const verify = cfg.settings.verify ? `\nDefault verify command: \`${cfg.settings.verify}\`` : "";
-      return text(`${lines.join("\n")}\n\nUp to ${concurrency} subagents run at the same time.${verify}`);
+      const spawned = [...ops.session.spawned].map(([n, a]) => `- ${n}: ${a.cli} / ${a.model}${a.permission === "plan" ? " (read-only)" : ""} — ${a.description} (spawned)`);
+      const pool = spawnPool(cfg);
+      const spawn = cfg.spawn.enabled
+        ? `\n\nYou can spawn up to ${Math.max(0, cfg.spawn.max - ops.session.spawned.size)} more with spawn_agent, from these providers and models the user allowed:\n${Object.entries(pool).map(([c, m]) => `- ${c}: ${m.join(", ")}`).join("\n") || "(none)"}`
+        : "";
+      return text(`${[...lines, ...spawned].join("\n")}\n\nUp to ${concurrency} subagents run at the same time.${verify}${spawn}`);
     },
+  );
+
+  const spawnAgent = tool(
+    "spawn_agent",
+    "Create a subagent for this session on a provider and model the user allowed (list_agents shows the pool), with a role you write. " +
+      "Use it when no configured agent fits a task: a stronger or cheaper model, a specialist (e.g. a security reviewer, a migration writer). " +
+      "Then delegate to it by name like any agent. Spawning again with the same name replaces its definition.",
+    {
+      name: z.string().describe("Lowercase name, e.g. sql-migrator"),
+      provider: z.string().describe("The agent CLI: one of the pool's providers (commandcode, opencode, claude, …)"),
+      model: z.string().describe("One of the models the pool lists for that provider"),
+      role: z.string().min(3).describe("What it is for, one line (shown to the user)"),
+      instructions: z.string().optional().describe("Its role prompt, put before every task it gets"),
+      read_only: z.boolean().optional().describe("It reports and changes nothing (reviewers, explorers)"),
+    },
+    safe(async ({ name, provider, model, role, instructions, read_only }) => {
+      const def = ops.spawn({ name, cli: provider, model, role, instructions, readOnly: read_only });
+      return text(`Spawned ${name}: ${def.cli} / ${def.model}${def.permission === "plan" ? " (read-only)" : ""}. Delegate to it with agent "${name}".`);
+    }),
   );
 
   const delegate = tool(
@@ -172,6 +197,6 @@ export function createYxuServer(ops: TaskOps, watch?: ToolWatch) {
   return createSdkMcpServer({
     name: SERVER_NAME,
     version: "0.3.0",
-    tools: [listAgents, delegate, delegateParallel, combine, verify, getDiff, discard, findCode, runInCheckout],
+    tools: [listAgents, spawnAgent, delegate, delegateParallel, combine, verify, getDiff, discard, findCode, runInCheckout],
   });
 }
