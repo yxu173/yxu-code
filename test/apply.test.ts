@@ -85,14 +85,15 @@ describe("apply in place", () => {
 
   test("you edited the same file meanwhile: merged; overlapping lines get conflict markers in that file only", async () => {
     const ops = new TaskOps(cfg(), root, new Session(), {});
-    // The fake writes whole files, so build the task's version with a shell step instead.
-    const t = await ops.shell("edit", "sed -i 's/^two$/TWO by task/; s/^six$/SIX by task/' a.txt");
+    // The fake writes whole files, so build the task's version with a shell step instead
+    // (sed -i.bak: the form both GNU and BSD sed accept).
+    const t = await ops.shell("edit", "sed -i.bak 's/^two$/TWO by task/; s/^six$/SIX by task/' a.txt && rm a.txt.bak");
     writeFileSync(join(root, "a.txt"), "one\ntwo\nthree\nFOUR by you\nfive\nsix\nseven\n"); // a different line
     let r = applyTask(root, t.task!.taskId);
     expect(r.ok).toBe(true);
     expect(read("a.txt")).toBe("one\nTWO by task\nthree\nFOUR by you\nfive\nSIX by task\nseven\n");
 
-    const t2 = await ops.shell("edit2", "sed -i 's/^seven$/SEVEN by task/' a.txt");
+    const t2 = await ops.shell("edit2", "sed -i.bak 's/^seven$/SEVEN by task/' a.txt && rm a.txt.bak");
     writeFileSync(join(root, "a.txt"), read("a.txt").replace("seven", "seven by you")); // the same line
     writeFileSync(join(root, "b.txt"), "b edited\n");
     r = applyTask(root, t2.task!.taskId);
