@@ -334,6 +334,36 @@ From the command line: `yxu orchestrator set effort high [--local|--user]`, `yxu
 effort`, `yxu orchestrator prompt`. Its built-in instructions can be extended or replaced with
 `.yxu/prompts/orchestrator.md` (see `yxu prompts`).
 
+### Permissions
+
+How much runs without asking, for the whole session. `/permissions` shows the choices, shift+tab
+cycles them, and the header shows the mode whenever it isn't the default:
+
+| mode | |
+|---|---|
+| **Ask for approval** (`ask`, default) | yxu asks before agents run commands and before commands in your checkout |
+| **Approve for me** (`auto`) | a classifier (a small, fast Claude model) approves or blocks each action, and asks you when it's unsure |
+| **Full access** (`full`) | every action runs without asking; agents run with yolo permission (read-only roles stay read-only) |
+
+```
+/permissions auto          # or shift+tab; /save keeps it
+yxu --permissions full     # the interface; yxu run --permissions auto "…" for scripts
+```
+
+In **Approve for me**:
+- **No model needed:** reading is approved, and a few things are always blocked (deleting home or
+  root, force-pushing, piping a download into a shell, touching credentials).
+- **The classifier decides the rest, with the run's goal in mind:** tests, builds, edits and
+  local commits pass; pushes, publishing and unfamiliar network calls come to you; destroying work,
+  dropping data and sending secrets are blocked.
+- **Every decision is shown** with its reason, and remembered for the session.
+- **Settings:** `settings.auto_model` picks the model (default `haiku`).
+- **What it covers:** commands in your checkout and the requests of ACP agents. Command Code,
+  OpenCode and Claude agents run headless with their own permission setting (full access gives
+  them yolo).
+
+A repository you haven't trusted can't raise the mode from its own `yxu.yaml`.
+
 ### Chores in your checkout
 
 Ask for repository chores in plain words, for example "push everything except the tasks folder

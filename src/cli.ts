@@ -44,7 +44,9 @@ Usage:
                             -c (--continue) continues this repo's latest session,
                             -s <id> (--session) a given one;
                             --issue 123|owner/repo#123|URL|linear:ENG-12 works on an issue;
-                            --image <file> (repeatable) sends images with the goal
+                            --image <file> (repeatable) sends images with the goal;
+                            --permissions ask|auto|full: ask for approval, approve for
+                            me (a classifier decides), or full access
   yxu orchestrator [prompt] | set <setting> <value> [--local|--user] | unset <setting>
                             how the orchestrator works: model, effort, budget, turns,
                             provider, agent, user-settings, instructions; prompt shows its instructions
@@ -213,6 +215,7 @@ async function tui(argv: string[]) {
       set: { type: "string", multiple: true },
       continue: { type: "boolean", short: "c" },
       resume: { type: "string", short: "r" },
+      permissions: { type: "string" },
     },
   });
   const root = repoRoot(process.cwd());
@@ -224,7 +227,8 @@ async function tui(argv: string[]) {
     die((e as Error).message);
   }
   if (resume && !samePath(resume.root, root)) die(`session ${resume.id} belongs to ${tildePath(resume.root)}: \`yxu resume ${resume.id}\` switches there`);
-  const cfg = loadConfig(root, { sets: values.set });
+  const sets = [...(values.set ?? []), ...(values.permissions ? [`settings.permissions=${values.permissions}`] : [])];
+  const cfg = loadConfig(root, { sets });
   getWorkflow(cfg, values.workflow); // validate before taking over the screen
   const { runTui } = await import("./tui/index.ts");
   const { pending } = await runTui({
@@ -232,7 +236,7 @@ async function tui(argv: string[]) {
     root,
     workflow: values.workflow,
     demo: values.demo,
-    sets: values.set,
+    sets,
     resume,
     folder: process.cwd(),
     ascii: values.ascii || undefined,
@@ -259,6 +263,7 @@ async function run(argv: string[]) {
       issue: { type: "string" },
       image: { type: "string", multiple: true },
       "no-apply": { type: "boolean" },
+      permissions: { type: "string" },
     },
   });
   let goal = positionals.join(" ").trim();
@@ -273,6 +278,7 @@ async function run(argv: string[]) {
   const sets = [...(values.set ?? [])];
   if (values.model) sets.push(`orchestrator.model=${values.model}`);
   if (values.budget) sets.push(`orchestrator.max_budget_usd=${values.budget}`);
+  if (values.permissions) sets.push(`settings.permissions=${values.permissions}`);
   const cfg = loadConfig(root, { sets });
   let workflow = getWorkflow(cfg, values.workflow);
   // `yxu run "/add-tests src/a.ts"` runs a custom command from .yxu/commands.
@@ -705,6 +711,10 @@ function makeRenderer(cfg: Config) {
           : console.log(`\n${bold(`■ [${index}/${total}] ${id}`)} ${dim(note ? `${type} · ${note}` : type)}`),
     ask: cliAsker(),
     hooks: {
+      onVerdict: (req, v) => {
+        const what = req.command ? `\`${req.command}\`` : `${req.kind} ${req.title}`;
+        console.log(v.decision === "allow" ? dim(`  ✓ approved for you: ${what} — ${v.reason}`) : v.decision === "block" ? `  ✗ blocked: ${what} — ${v.reason}` : `  ? not sure about ${what} (${v.reason})`);
+      },
       onAgentEvent: (_id, e) => {
         if (e.kind === "tool" && e.status !== "started") console.log(dim(`    ${e.status === "failed" ? "✗" : "·"} ${e.name}${e.target ? ` ${e.target}` : ""}`));
         else if (e.kind === "permission") console.log(`    △ ${e.tool} — ${e.decision}`);

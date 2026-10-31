@@ -293,12 +293,17 @@ export const ConfigSchema = z.object({
         .enum(["auto", "ask", "manual"])
         .default("auto")
         .describe("How results reach your working tree: auto (applied when a run ends, /undo reverts), ask (you choose: apply, diff, later, discard), manual (/apply)"),
+      permissions: z
+        .enum(["ask", "auto", "full"])
+        .default("ask")
+        .describe("How much runs without asking: ask (ask for approval), auto (a classifier approves or blocks each action, asks when unsure), full (everything runs; agents get yolo)"),
+      auto_model: z.string().default("haiku").describe("The model that approves or blocks actions in permissions: auto"),
       checkout_commands: z
         .enum(["ask", "allow", "off"])
         .default("ask")
         .describe("Commands the orchestrator runs in your own checkout (git commit, push, …): ask before each (default), allow without asking, or off"),
     })
-    .default({ max_diff_chars: 12_000, concurrency: 3, verify_timeout: 600_000, apply: "auto", checkout_commands: "ask" }),
+    .default({ max_diff_chars: 12_000, concurrency: 3, verify_timeout: 600_000, apply: "auto", permissions: "ask", auto_model: "haiku", checkout_commands: "ask" }),
   context: ContextSchema,
   compact: CompactSchema,
   hooks: z
