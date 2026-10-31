@@ -3,12 +3,13 @@ import { dirname } from "node:path";
 import { combineTasks, readTaskRecord } from "./combine.ts";
 import { spawnPool, toProfile, type Config, type RawAgent } from "./config.ts";
 import { taskData } from "./actions.ts";
-import { branchFor, collectChanges, createWorktree, git, removeWorktree, worktreeFor, YXU_IDENTITY } from "./git.ts";
+import { branchFor, collectChanges, createWorktree, git, removeWorktree, snapshot, worktreeFor, YXU_IDENTITY } from "./git.ts";
 import { formatHookFailure, hasHooks, runHooks } from "./hooks.ts";
-import { newTaskId, runTask, Semaphore, writeTaskRecord } from "./runner.ts";
+import { newTaskId, readOrigin, runTask, Semaphore, writeTaskRecord } from "./runner.ts";
 import { taskPrompt } from "./prompts.ts";
 import { addNote } from "./task-notes.ts";
 import { alwaysRule, type PermissionRequest } from "./permissions.ts";
+import { accessMode, asker, modelClassifier, type Classifier, type Verdict } from "./access.ts";
 
 /** Git commands that only look: they run in the checkout without asking. No chaining or redirects. */
 const READ_ONLY_GIT = /^\s*git\s+(status|diff|log|show|shortlog|blame|rev-parse|ls-files|remote(\s+-v)?|branch(\s+(-a|-v|-vv|-r|--list|--show-current))*|stash\s+list|describe|tag(\s+(-l|--list))?)(\s+[^;&|`$<>\n]*)?$/;
@@ -21,6 +22,8 @@ import { formatVerify, runVerify, type VerifyResult } from "./verify.ts";
 export interface OpsHooks {
   /** The orchestrator created a subagent (spawn_agent). */
   onSpawn?: (name: string, def: RawAgent) => void;
+  /** permissions: auto decided an action (approved, blocked, or unsure). */
+  onVerdict?: (req: PermissionRequest, v: Verdict) => void;
   onDelegateStart?: (info: { taskId: string; agent: string; model?: string; task: string; buildOn?: string }) => void;
   onDelegateEnd?: (result: TaskResult) => void;
   /** Live progress from agents that stream it (ACP). */
@@ -92,10 +95,24 @@ export class TaskOps {
     readonly cfg: Config,
     readonly root: string,
     readonly session: Session,
-    readonly opts: { allowedAgents?: string[]; signal?: AbortSignal; hooks?: OpsHooks; onChange?: () => void; ask?: Asker } = {},
+    readonly opts: { allowedAgents?: string[]; signal?: AbortSignal; hooks?: OpsHooks; onChange?: () => void; ask?: Asker; goal?: string; classify?: Classifier } = {},
   ) {
     this.slots = new Semaphore(cfg.settings.concurrency);
     this.allowed = opts.allowedAgents ?? Object.keys(cfg.agents);
+  }
+
+  /** Classifier decisions this run, by action (permissions: auto). */
+  private verdicts = new Map<string, Verdict>();
+
+  /** Who approves an action now: follows settings.permissions as it is at that moment. */
+  private approver(): Asker | undefined {
+    return asker(accessMode(this.cfg), this.opts.ask, {
+      classify: this.opts.classify ?? modelClassifier(this.cfg),
+      root: this.root,
+      goal: this.opts.goal,
+      remembered: this.verdicts,
+      onVerdict: (req, v) => this.hooks.onVerdict?.(req, v),
+    });
   }
 
   private get hooks() {
@@ -126,6 +143,8 @@ export class TaskOps {
       const profile = toProfile(def);
       // A cloned repo can't give its agents yolo until the user trusts it.
       if (untrustedYolo(this.cfg, agent)) profile.permission = "accept-edits";
+      // Full access: agents run commands without asking (read-only roles stay read-only).
+      if (accessMode(this.cfg) === "full" && profile.permission !== "plan") profile.permission = "yolo";
       const result = await runTask({
         agentName: agent,
         profile,
@@ -134,7 +153,7 @@ export class TaskOps {
         cwd: this.root,
         baseRef: base.baseRef,
         signal: this.opts.signal,
-        ask: this.opts.ask,
+        ask: this.approver(),
         always: this.session.always,
         onEvent: (taskId, e) => this.hooks.onAgentEvent?.(taskId, e),
         onStart: (taskId) => this.hooks.onDelegateStart?.({ taskId, agent, model: profile.model, task, buildOn }),
@@ -246,9 +265,10 @@ export class TaskOps {
     if (mode === "ask" && !READ_ONLY_GIT.test(command)) {
       const req: PermissionRequest = { agent: "orchestrator (in your checkout)", kind: "execute", title: reason?.trim() || command, command, paths: [] };
       if (!this.session.always.has(alwaysRule(req))) {
-        if (!this.opts.ask) return { denied: "nobody can approve it here (no terminal or interface)" };
-        const a = await this.opts.ask(req);
-        if (a === "deny") return { denied: "the user said no" };
+        const approve = this.approver();
+        if (!approve) return { denied: "nobody can approve it here (no terminal or interface)" };
+        const a = await approve(req);
+        if (a === "deny") return { denied: accessMode(this.cfg) === "auto" ? `blocked: ${this.verdicts.get(`execute:${command}`)?.reason ?? "the classifier or the user said no"}` : "the user said no" };
         if (a === "always") this.session.always.add(alwaysRule(req));
       }
     }
@@ -289,7 +309,8 @@ export class TaskOps {
     const prev = buildOn ? this.session.tasks.get(buildOn) : undefined;
     if (buildOn && !prev) throw new Error(`Unknown task_id "${buildOn}".`);
     const taskId = newTaskId();
-    const wt = createWorktree(this.root, taskId, prev?.branch);
+    const wt = createWorktree(this.root, taskId, prev?.branch ?? snapshot(this.root));
+    const origin = prev ? (readOrigin(this.root, prev.taskId) ?? wt.base) : wt.base;
     this.hooks.onShellStart?.({ id, command, buildOn });
     let result: VerifyResult;
     let task: TaskResult | undefined;
@@ -312,7 +333,7 @@ export class TaskOps {
           worktree: wt.path,
         };
         this.session.tasks.set(taskId, { ...task, prompt: command, parents: buildOn ? [buildOn] : [] });
-        writeTaskRecord(this.root, task, { prompt: command, baseRef: prev?.branch });
+        writeTaskRecord(this.root, task, { prompt: command, baseRef: prev?.branch, origin });
       }
     } finally {
       if (!task) removeWorktree(this.root, taskId, true);

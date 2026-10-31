@@ -52,7 +52,7 @@ const REPO_LAYERS = new Set(["packs", "project", "local"]);
 const fromRepoLayer = (origin: string) => REPO_LAYERS.has(origin.split(":")[0]!);
 
 /** True when `key` (or the closest parent that has an origin) came from the repo's own files. */
-function fromRepo(cfg: Config, k: string): boolean {
+export function fromRepo(cfg: Config, k: string): boolean {
   const origins = cfg.origins;
   if (!origins) return false; // a config not loaded from layers (tests, embedding)
   const parts = k.split(".");

@@ -95,7 +95,10 @@ export function header(state: State, w: number, ctx: ViewContext): Line {
   const detail = st === "working" && state.activeSlots ? `${state.activeSlots} agent${state.activeSlots === 1 ? "" : "s"} at work` : st === "working" || st === "fault" || st === "cancelling" ? state.statusNote : undefined;
   if (detail && w >= 72) status.push(s(` ${g.dot} ${detail}`, { fg: "dim" }));
 
-  const right: Line = w >= 100 ? [s(`${c.model}${c.effort ? ` ${g.dot} ${c.effort}` : ""} ${g.dot} ${c.workflow} `, { fg: "dim" })] : [s(" ")];
+  // Anything but "ask" is shown, so you always know what runs without asking.
+  const access: Line =
+    c.access === "full" ? [s("Full access", { fg: "fault", bold: true }), s(` ${g.dot} `, { fg: "faint" })] : c.access === "auto" ? [s("Approve for me", { fg: "violet", bold: true }), s(` ${g.dot} `, { fg: "faint" })] : [];
+  const right: Line = w >= 100 ? [...access, s(`${c.model}${c.effort ? ` ${g.dot} ${c.effort}` : ""} ${g.dot} ${c.workflow} `, { fg: "dim" })] : access.length ? [...access.slice(0, 1), s(" ")] : [s(" ")];
   // Degrade gracefully: drop the detail, then the repo, then the model — never the status.
   const attempts: [Line, Line, Line][] = [
     [[...left, ...where], status, right],
@@ -301,6 +304,7 @@ export const KEY_HELP: [string, string][] = [
   ["alt+enter  ctrl+j", "new line"],
   ["↑ ↓", "move / history"],
   ["pgup pgdn  mouse wheel", "scroll conversation (shift+wheel: a page)"],
+  ["shift+tab", "permissions: ask for approval → approve for me → full access"],
   ["ctrl+v", "attach the image on the clipboard (or drag an image file in)"],
   ["shift+drag", "select text (the wheel belongs to yxu; ui.mouse: false gives it back)"],
   ["end", "follow newest output"],
@@ -490,7 +494,7 @@ export function decisionRows(state: State, w: number, ctx: ViewContext): Line[] 
     ],
   ];
   const options: Line = [
-    s("[a]", { fg: "amber", bold: true }), s(" apply to your branch   ", { fg: "ivory" }),
+    s("[a]", { fg: "amber", bold: true }), s(" apply to your working tree   ", { fg: "ivory" }),
     s("[v]", { fg: "amber", bold: true }), s(" view diff   ", { fg: "ivory" }),
     s("[p]", { fg: "amber", bold: true }), s(" pull request   ", { fg: "ivory" }),
     s("[l]", { fg: "amber", bold: true }), s(" later   ", { fg: "ivory" }),

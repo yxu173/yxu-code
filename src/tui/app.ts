@@ -3,7 +3,7 @@ import { basename, isAbsolute, join } from "node:path";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { which } from "../platform.ts";
-import { applyTask, applyWithHooks, diffStat, discardTask, type ActionResult } from "../actions.ts";
+import { applyTask, applyWithHooks, diffStat, discardTask, undoApply, type ActionResult } from "../actions.ts";
 import { hasHooks, withRunHooks } from "../hooks.ts";
 import { describe, type Answer, type PermissionRequest } from "../permissions.ts";
 import type { PluginCommand } from "../plugin-api.ts";
@@ -18,6 +18,7 @@ import { Session } from "../ops.ts";
 import { runPipeline } from "../orchestrator/pipeline.ts";
 import { Conversation, type TurnRecord } from "../conversation.ts";
 import { spawnPool } from "../config.ts";
+import { ACCESS, ACCESS_MODES, accessMode } from "../access.ts";
 import { attach, clipboardImage, findImagePaths, size as imageSize, type Attachment } from "../images.ts";
 import { fieldNamed, ORCHESTRATOR_FIELDS, orchestratorReport } from "../orchestrator-settings.ts";
 import { ago, pendingIn, samePath, describe as describeSession, findSession, listSessions, newSession, restoreTasks, saveSession, tildePath, titleFrom, type SessionFile } from "../sessions.ts";
@@ -83,6 +84,8 @@ export interface TaskBackend {
   exists(id: string): boolean;
   diff(id: string): string;
   apply(id: string): ActionResult | Promise<ActionResult>;
+  /** Put back what the last apply changed. */
+  undo?(): ActionResult;
   discard(id: string): ReturnType<typeof discardTask>;
   /** GitHub (or plugin trackers): issues in, pull requests out, CI fixes. */
   github?: {
@@ -101,6 +104,7 @@ export function gitBackend(root: string, cfg: () => Config): TaskBackend {
     },
     apply: (id) => (hasHooks(cfg(), "before_apply") ? applyWithHooks(cfg(), root, id) : applyTask(root, id)),
     discard: (id) => discardTask(root, id),
+    undo: () => undoApply(root),
     github: {
       issue: async (ref) => {
         const [r, ...extra] = ref.split(/\s+/);
@@ -516,6 +520,8 @@ export class App {
         return this.scrollBy(this.page());
       case "pagedown":
         return this.scrollBy(-this.page());
+      case "backtab":
+        return this.cycleAccess();
       case "tab":
         e.insert("  ");
         break;
@@ -1499,7 +1505,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
 
     this.warnIfContextFull();
     if (!cancelled) this.maybeCompactInBackground();
-    if (this.offerDecision()) return;
+    if (await this.landResult(!cancelled && !thrown && !!outcome?.ok)) return;
     if (!cancelled && (thrown || !outcome?.ok)) s.setStatus("fault", "see the fault below");
     else this.settle();
   }
@@ -1701,6 +1707,16 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
         onSpawn: (name, def) => {
           s.add({ kind: "notice", tone: "info", text: `Spawned **${name}** (${def.cli} · ${def.model}${def.permission === "plan" ? " · read-only" : ""}): ${def.description}` });
           this.store.set({ context: this.contextInfo() });
+        },
+        onVerdict: (req, v) => {
+          const what = req.command ? `\`${req.command}\`` : `${req.kind} ${req.paths.join(", ") || req.title}`;
+          s.add(
+            v.decision === "allow"
+              ? { kind: "notice", tone: "info", text: `Approved for you: ${what} — ${v.reason}` }
+              : v.decision === "block"
+                ? { kind: "notice", tone: "attention", text: `Blocked: ${what} — ${v.reason}` }
+                : { kind: "notice", tone: "attention", text: `Not sure about ${what} (${v.reason}); asking you.` },
+          );
         },
         onAgentEvent: (taskId, e) => {
           const a = this.findActivity(taskId);
@@ -2143,6 +2159,35 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     }
   }
 
+  // ── permissions ───────────────────────────────────────────────────────────
+
+  /** `/permissions [ask|auto|full]`, or shift+tab to cycle: how much runs without asking. */
+  setAccess(arg = "") {
+    const current = accessMode(this.cfg);
+    if (!arg) {
+      const rows = ACCESS_MODES.map((m) => `- ${m === current ? "**✓ " : ""}${ACCESS[m].label}${m === current ? "**" : ""} (\`/permissions ${m}\`) — ${ACCESS[m].about}`);
+      return this.note(
+        [
+          "**Permissions**",
+          ...rows,
+          "",
+          "shift+tab cycles them. Approve for me covers commands in your checkout and ACP agents' requests; Command Code, OpenCode and Claude agents keep their own permission setting (full access gives them yolo). `/save` keeps the choice.",
+        ].join("\n"),
+      );
+    }
+    if (!(ACCESS_MODES as readonly string[]).includes(arg)) return this.fail(`usage: /permissions ask|auto|full`, ACCESS_MODES.map((m) => `${m}: ${ACCESS[m].label}`).join(" · "));
+    this.setConfig(["settings", "permissions"], arg);
+    const now = accessMode(this.cfg);
+    if (now !== arg) return this.fail(`this repository's config can't be raised to ${ACCESS[arg as "auto"].label} until you trust it`, "/trust, then try again");
+    this.changed(`Permissions: ${ACCESS[now].label} — ${ACCESS[now].about}`);
+    if (now === "full") this.note("Full access: agents run any command in their worktrees and commands in your checkout run without asking. Nothing reaches your branch until you apply it, but pushes and other outside effects happen right away.", "attention");
+  }
+
+  private cycleAccess() {
+    const i = ACCESS_MODES.indexOf(accessMode(this.cfg));
+    this.setAccess(ACCESS_MODES[(i + 1) % ACCESS_MODES.length]);
+  }
+
   private mapping?: Promise<RepoMap | undefined>;
 
   /** Bring the repo map up to date in the background (only changed files are read). */
@@ -2283,13 +2328,40 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
     if (pending instanceof Promise && this.store.state.status === "working") this.store.setStatus("ready");
     if (r.ok) {
       this.refreshMap(); // HEAD moved
-      this.store.add({ kind: "notice", tone: "ok", text: `Applied. ${r.message}.` });
+      this.store.add({ kind: "notice", tone: "ok", text: `${r.message[0]!.toUpperCase()}${r.message.slice(1)}. Review with \`git diff\`; /undo puts it back.` });
       for (const t of this.store.state.tasks) if (t.taskId === id) this.store.upsertTask({ ...t, state: "applied", pending: false });
       this.discardTracked(id, true);
     } else {
       this.store.add({ kind: "error", message: r.message, hint: "hint" in r ? r.hint : undefined });
       this.store.setStatus("fault", "apply failed");
     }
+  }
+
+  /**
+   * After a run: per settings.apply, apply the result now (auto), ask (the decision box), or just
+   * say it's ready (manual). True when it took over the status.
+   */
+  private async landResult(ok: boolean): Promise<boolean> {
+    const mode = this.cfg.settings.apply;
+    const tips = this.session.tips().filter((t) => this.backend.exists(t.taskId));
+    if (!tips.length) return false;
+    if (mode === "ask" || (mode === "auto" && (!ok || tips.length > 1))) return this.offerDecision();
+    if (mode === "manual") {
+      this.store.add({ kind: "notice", tone: "info", text: `Result ready: \`/apply ${tips.at(-1)!.taskId}\` brings it into your working tree (\`/diff\` to look first, \`/discard\` to drop it).` });
+      return false;
+    }
+    await this.applyTask(tips.at(-1)!.taskId);
+    if (this.store.state.status === "fault") return true;
+    this.settle();
+    return true;
+  }
+
+  /** `/undo`: put back what the last apply changed. */
+  undoApply() {
+    const r = this.backend.undo?.();
+    if (!r) return this.fail("undo isn't available here");
+    if (r.ok) this.store.add({ kind: "notice", tone: "ok", text: `${r.message[0]!.toUpperCase()}${r.message.slice(1)}.` });
+    else this.fail(r.message);
   }
 
   private discardTask(id: string) {
@@ -2343,6 +2415,7 @@ ${c.notes}` : "No notes. Set them with /context notes <text>." });
       mode: this.workflow?.mode ?? "auto",
       model: orchestratorLabel(cfg),
       effort: cfg.orchestrator.effort,
+      access: accessMode(cfg),
       agents: [
         ...(this.workflow?.allowed_agents ?? Object.keys(cfg.agents)).map((name) => ({ name, cli: cfg.agents[name]!.cli, model: cfg.agents[name]!.model })),
         // Spawned by the orchestrator this session (marked +).

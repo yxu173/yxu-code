@@ -53,10 +53,24 @@ yxu                # open the interface; describe a goal
 yxu --demo         # a scripted tour of the interface: no agents, no git changes, no cost
 ```
 
-A typical run: Opus reads the repo and plans, then delegates tasks to your agents in parallel
-worktrees. It checks the results (and your `verify` command), then asks you to **apply**, **view
-the diff**, decide **later** or **discard**. From scripts, use `yxu run "<goal>"`, then
-`yxu show <task>` and `yxu apply <task>`.
+A typical run: Opus reads the repo and plans, then delegates tasks to your agents. Each one works
+in its own copy of your repository (a git worktree) that starts from **your files as they are
+now**, uncommitted changes included. When the run is done, the result lands in your working tree as
+ordinary uncommitted changes, the way an agent working in place would leave them: review them with
+`git diff`, commit when you like, or **`/undo`** (`yxu undo`) to put everything back.
+
+### How results reach your files
+
+- **No commits, no merge commits, no branch switching.** Applying writes files; you commit.
+- **Your own uncommitted work is safe.** Files you didn't touch since the task started take the
+  task's version; files you edited meanwhile are merged line by line. Only lines that both of
+  you changed get conflict markers (`<<<<<<< your working tree` … `>>>>>>> task <id>`), and only
+  in those files. Binary files both sides changed are put next to yours as `<file>.yxu-theirs`.
+- **`/undo`** restores exactly what the last apply changed, and leaves files you edited since.
+- **`settings.apply`:** `auto` (default) applies when a run ends, `ask` shows the choice (apply,
+  view diff, pull request, later, discard), `manual` waits for `/apply <task>`. `yxu run --no-apply`
+  skips it once.
+- **Branches:** finished task branches stay for `yxu pr`; `yxu clean` removes them.
 
 ## The team
 
@@ -341,6 +355,36 @@ comes from; change any of them in place:
 From the command line: `yxu orchestrator set effort high [--local|--user]`, `yxu orchestrator unset
 effort`, `yxu orchestrator prompt`. Its built-in instructions can be extended or replaced with
 `.yxu/prompts/orchestrator.md` (see `yxu prompts`).
+
+### Permissions
+
+How much runs without asking, for the whole session. `/permissions` shows the choices, shift+tab
+cycles them, and the header shows the mode whenever it isn't the default:
+
+| mode | |
+|---|---|
+| **Ask for approval** (`ask`, default) | yxu asks before agents run commands and before commands in your checkout |
+| **Approve for me** (`auto`) | a classifier (a small, fast Claude model) approves or blocks each action, and asks you when it's unsure |
+| **Full access** (`full`) | every action runs without asking; agents run with yolo permission (read-only roles stay read-only) |
+
+```
+/permissions auto          # or shift+tab; /save keeps it
+yxu --permissions full     # the interface; yxu run --permissions auto "…" for scripts
+```
+
+In **Approve for me**:
+- **No model needed:** reading is approved, and a few things are always blocked (deleting home or
+  root, force-pushing, piping a download into a shell, touching credentials).
+- **The classifier decides the rest, with the run's goal in mind:** tests, builds, edits and
+  local commits pass; pushes, publishing and unfamiliar network calls come to you; destroying work,
+  dropping data and sending secrets are blocked.
+- **Every decision is shown** with its reason, and remembered for the session.
+- **Settings:** `settings.auto_model` picks the model (default `haiku`).
+- **What it covers:** commands in your checkout and the requests of ACP agents. Command Code,
+  OpenCode and Claude agents run headless with their own permission setting (full access gives
+  them yolo).
+
+A repository you haven't trusted can't raise the mode from its own `yxu.yaml`.
 
 ### Chores in your checkout
 

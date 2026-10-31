@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 import { getWorkflow, orchestratorLabel, loadConfig, toProfile, type Config } from "./config.ts";
 import { loadLayers } from "./config-layers.ts";
 import { buildContextPrompt, compactSettings, formatTokens, settingSources, worthCompacting } from "./context.ts";
-import { applyWithHooks, discardTask } from "./actions.ts";
+import { applyWithHooks, discardTask, undoApply } from "./actions.ts";
 import { combineTasks, readTaskRecord } from "./combine.ts";
 import { branchFor, repoRoot, tryGit } from "./git.ts";
 import { Session, TaskOps } from "./ops.ts";
@@ -44,7 +44,9 @@ Usage:
                             -c (--continue) continues this repo's latest session,
                             -s <id> (--session) a given one;
                             --issue 123|owner/repo#123|URL|linear:ENG-12 works on an issue;
-                            --image <file> (repeatable) sends images with the goal
+                            --image <file> (repeatable) sends images with the goal;
+                            --permissions ask|auto|full: ask for approval, approve for
+                            me (a classifier decides), or full access
   yxu orchestrator [prompt] | set <setting> <value> [--local|--user] | unset <setting>
                             how the orchestrator works: model, effort, budget, turns,
                             provider, agent, user-settings, instructions; prompt shows its instructions
@@ -54,6 +56,8 @@ Usage:
                             reopen a session from any folder: its conversation and pending
                             results (no id: pick from a list); yxu -c continues this repo's latest
   yxu map [words]           the repo map shared with every agent: overview, or what it finds
+  yxu undo                  put back what the last apply changed in your working tree
+  yxu clean                 remove the branches of applied and discarded tasks
   yxu pr [task] [--title T] [--base B] [--branch name] [--draft] [--dry-run]
                             push a task's branch and open a pull request: what each agent
                             did, checks, review findings, "Closes #issue" (needs gh)
@@ -211,6 +215,7 @@ async function tui(argv: string[]) {
       set: { type: "string", multiple: true },
       continue: { type: "boolean", short: "c" },
       resume: { type: "string", short: "r" },
+      permissions: { type: "string" },
     },
   });
   const root = repoRoot(process.cwd());
@@ -222,7 +227,8 @@ async function tui(argv: string[]) {
     die((e as Error).message);
   }
   if (resume && !samePath(resume.root, root)) die(`session ${resume.id} belongs to ${tildePath(resume.root)}: \`yxu resume ${resume.id}\` switches there`);
-  const cfg = loadConfig(root, { sets: values.set });
+  const sets = [...(values.set ?? []), ...(values.permissions ? [`settings.permissions=${values.permissions}`] : [])];
+  const cfg = loadConfig(root, { sets });
   getWorkflow(cfg, values.workflow); // validate before taking over the screen
   const { runTui } = await import("./tui/index.ts");
   const { pending } = await runTui({
@@ -230,7 +236,7 @@ async function tui(argv: string[]) {
     root,
     workflow: values.workflow,
     demo: values.demo,
-    sets: values.set,
+    sets,
     resume,
     folder: process.cwd(),
     ascii: values.ascii || undefined,
@@ -256,6 +262,8 @@ async function run(argv: string[]) {
       session: { type: "string", short: "s" },
       issue: { type: "string" },
       image: { type: "string", multiple: true },
+      "no-apply": { type: "boolean" },
+      permissions: { type: "string" },
     },
   });
   let goal = positionals.join(" ").trim();
@@ -270,6 +278,7 @@ async function run(argv: string[]) {
   const sets = [...(values.set ?? [])];
   if (values.model) sets.push(`orchestrator.model=${values.model}`);
   if (values.budget) sets.push(`orchestrator.max_budget_usd=${values.budget}`);
+  if (values.permissions) sets.push(`settings.permissions=${values.permissions}`);
   const cfg = loadConfig(root, { sets });
   let workflow = getWorkflow(cfg, values.workflow);
   // `yxu run "/add-tests src/a.ts"` runs a custom command from .yxu/commands.
@@ -376,9 +385,17 @@ async function run(argv: string[]) {
     else console.log(bold("─── done ───"));
     const cost = `orchestrator $${outcome.costUsd.toFixed(4)} · subagents $${r.subagentCost().toFixed(4)}`;
     console.log(dim(`${outcome.session.tasks.size} task(s) · ${cost} · ${outcome.runId}`));
-    printApplyHints(
-      outcome.session.tips().map((t) => ({ taskId: t.taskId, agent: t.agent, includes: outcome.session.ancestorCount(t.taskId) })),
-    );
+    // settings.apply auto (default): a finished run's single result goes into the working tree.
+    const tips = outcome.session.tips();
+    if (outcome.ok && !values["no-apply"] && cfg.settings.apply === "auto" && tips.length === 1) {
+      const a = await applyWithHooks(cfg, root, tips[0]!.taskId);
+      if (a.ok) {
+        console.log(`✓ ${a.message}\n  ${dim("review: git diff · undo: yxu undo")}`);
+        return outcome;
+      }
+      console.log(`! couldn't apply ${tips[0]!.taskId}: ${a.message}`);
+    }
+    printApplyHints(tips.map((t) => ({ taskId: t.taskId, agent: t.agent, includes: outcome.session.ancestorCount(t.taskId) })));
     return outcome;
   }
 }
@@ -695,6 +712,10 @@ function makeRenderer(cfg: Config) {
     ask: cliAsker(),
     hooks: {
       onSpawn: (name, def) => console.log(`+ ${bold(name)} ${dim(`spawned: ${def.cli} · ${def.model}${def.permission === "plan" ? " · read-only" : ""} — ${def.description}`)}`),
+      onVerdict: (req, v) => {
+        const what = req.command ? `\`${req.command}\`` : `${req.kind} ${req.title}`;
+        console.log(v.decision === "allow" ? dim(`  ✓ approved for you: ${what} — ${v.reason}`) : v.decision === "block" ? `  ✗ blocked: ${what} — ${v.reason}` : `  ? not sure about ${what} (${v.reason})`);
+      },
       onAgentEvent: (_id, e) => {
         if (e.kind === "tool" && e.status !== "started") console.log(dim(`    ${e.status === "failed" ? "✗" : "·"} ${e.name}${e.target ? ` ${e.target}` : ""}`));
         else if (e.kind === "permission") console.log(`    △ ${e.tool} — ${e.decision}`);
@@ -1075,6 +1096,22 @@ try {
     case "resume":
       await resumeCommand(rest);
       break;
+    case "undo": {
+      const r = undoApply(repoRoot(process.cwd()));
+      if (!r.ok) die(r.message);
+      console.log(`✓ ${r.message}`);
+      break;
+    }
+    case "clean": {
+      const root = repoRoot(process.cwd());
+      tryGit(root, "worktree", "prune");
+      // Branches of tasks that were applied or discarded (no worktree left).
+      const live = new Set(tryGit(root, "worktree", "list", "--porcelain").out.split("\n").filter((l) => l.startsWith("branch refs/heads/")).map((l) => l.slice(18)));
+      const old = tryGit(root, "for-each-ref", "--format=%(refname:short)", "refs/heads/yxu/").out.split("\n").filter((b) => b && !live.has(b));
+      for (const b of old) tryGit(root, "branch", "-D", b);
+      console.log(`✓ removed ${old.length} finished task branch${old.length === 1 ? "" : "es"}${live.size ? ` (${live.size} still waiting: yxu show / apply / discard)` : ""}`);
+      break;
+    }
     case "__summarize":
       await summarizeDetached(rest);
       break;
