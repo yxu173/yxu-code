@@ -297,6 +297,17 @@ export const ConfigSchema = z.object({
     .default({ max_diff_chars: 12_000, concurrency: 3, verify_timeout: 600_000, checkout_commands: "ask" }),
   context: ContextSchema,
   compact: CompactSchema,
+  spawn: z
+    .object({
+      enabled: z.boolean().default(true).describe("Let the orchestrator create subagents for a session (spawn_agent)"),
+      models: z
+        .record(z.string(), z.array(z.string()).min(1))
+        .optional()
+        .describe("The providers and models it may spawn with, e.g. { commandcode: [deepseek/deepseek-v4-pro], claude: [sonnet] }; default: the cli/model pairs your agents use"),
+      max: z.number().int().min(1).max(50).default(8).describe("Most subagents it may spawn in one session"),
+    })
+    .default({ enabled: true, max: 8 })
+    .describe("Subagents the orchestrator creates on its own, from providers and models you choose"),
   hooks: z
     .object({
       before_run: z.array(z.string()).optional().describe("Before a run; a failing command blocks it"),
@@ -410,6 +421,10 @@ export function validateConfig(raw: unknown, source: string, where: (path: strin
         throw abad(`${what}: ${(e as Error).message}`);
       }
     }
+  }
+  for (const cli of Object.keys(cfg.spawn.models ?? {})) {
+    if (cli === "acp" || cli === "generic") throw bad("spawn.models", `spawn.models: ${cli} agents need a command, so they can't be spawned; define them under agents`);
+    if (!(BUILTIN_CLIS as readonly string[]).includes(cli) && !ext.clis.includes(cli)) throw bad("spawn.models", `spawn.models: unknown cli "${cli}" (built in: commandcode, opencode, claude${ext.clis.length ? `; from plugins: ${ext.clis.join(", ")}` : ""})`);
   }
   if (cfg.settings.default_agent && !cfg.agents[cfg.settings.default_agent]) {
     throw bad("settings.default_agent", `settings.default_agent "${cfg.settings.default_agent}" is not an agent`);
@@ -548,6 +563,17 @@ export function resolveEnv(env: Record<string, string>): Record<string, string> 
       return [k, m ? (process.env[m[1]!] ?? "") : v];
     }),
   );
+}
+
+/** The providers and models the orchestrator may spawn subagents with: spawn.models, or what your agents use. */
+export function spawnPool(cfg: Config): Record<string, string[]> {
+  if (cfg.spawn.models) return cfg.spawn.models;
+  const pool: Record<string, string[]> = {};
+  for (const a of Object.values(cfg.agents)) {
+    if (a.cli === "acp" || a.cli === "generic" || !a.model) continue; // those need a command, or name no model
+    pool[a.cli] = [...new Set([...(pool[a.cli] ?? []), a.model])];
+  }
+  return pool;
 }
 
 /** Where the config names an agent (so removing it would break those places). */

@@ -694,6 +694,7 @@ function makeRenderer(cfg: Config) {
           : console.log(`\n${bold(`■ [${index}/${total}] ${id}`)} ${dim(note ? `${type} · ${note}` : type)}`),
     ask: cliAsker(),
     hooks: {
+      onSpawn: (name, def) => console.log(`+ ${bold(name)} ${dim(`spawned: ${def.cli} · ${def.model}${def.permission === "plan" ? " · read-only" : ""} — ${def.description}`)}`),
       onAgentEvent: (_id, e) => {
         if (e.kind === "tool" && e.status !== "started") console.log(dim(`    ${e.status === "failed" ? "✗" : "·"} ${e.name}${e.target ? ` ${e.target}` : ""}`));
         else if (e.kind === "permission") console.log(`    △ ${e.tool} — ${e.decision}`);

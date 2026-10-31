@@ -3,7 +3,7 @@
  * Every command is a thin layer over App methods; nothing here talks to agents directly.
  */
 import { spawnSync } from "node:child_process";
-import { agentRefs, parseDuration } from "../config.ts";
+import { agentRefs, parseDuration, spawnPool } from "../config.ts";
 import { tryGit } from "../git.ts";
 import { which } from "../platform.ts";
 import { liveTasks } from "../runner.ts";
@@ -270,6 +270,27 @@ export const COMMANDS: Command[] = [
     group: "session",
     complete: (_app, i) => (i === 0 ? [{ value: "clear", description: "remove attached images" }] : []),
     run: (app, args) => app.attachImage(args.join(" ")),
+  },
+  {
+    name: "spawn",
+    usage: "[on|off|add <cli> <model>|remove <cli> [model]|reset]",
+    description: "The providers and models the orchestrator may spawn subagents with",
+    group: "agents",
+    complete: (app, i, before) => {
+      if (i === 0)
+        return [
+          { value: "add", description: "allow a provider and model" },
+          { value: "remove", description: "take one out" },
+          { value: "reset", description: "back to your agents' models" },
+          { value: "on", description: "let the orchestrator spawn" },
+          { value: "off", description: "only configured agents" },
+        ];
+      if (i === 1 && (before[0] === "add" || before[0] === "remove")) return cliSuggestions(app);
+      if (i === 2 && before[0] === "add") return modelSuggestions(app, before[1] ?? "");
+      if (i === 2 && before[0] === "remove") return (spawnPool(app.cfg)[before[1] ?? ""] ?? []).map((value) => ({ value }));
+      return [];
+    },
+    run: (app, args) => app.spawnCommand(args),
   },
   {
     name: "orchestrator",

@@ -3,6 +3,14 @@
 All notable changes are listed here. The project uses [semantic versioning](https://semver.org);
 before 1.0, minor versions may change the config format (with migration notes here).
 
+## Unreleased
+
+### Added
+- The orchestrator can spawn subagents for a session (`spawn_agent`) on a provider and model you
+  allowed (`spawn.models`; by default the models your agents use), with a role and instructions it
+  writes, read-only if it likes; then it delegates to them by name. `spawn.max` (8), `spawn.enabled`.
+  Interface: `/spawn` (show, add, remove, reset, on, off); spawned agents in the panel (`+name`).
+
 ## 0.1.3 (2026-10-26)
 
 ### Added

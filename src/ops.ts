@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { combineTasks, readTaskRecord } from "./combine.ts";
-import { toProfile, type Config } from "./config.ts";
+import { spawnPool, toProfile, type Config, type RawAgent } from "./config.ts";
 import { taskData } from "./actions.ts";
 import { branchFor, collectChanges, createWorktree, git, removeWorktree, worktreeFor, YXU_IDENTITY } from "./git.ts";
 import { formatHookFailure, hasHooks, runHooks } from "./hooks.ts";
@@ -19,6 +19,8 @@ import { emptyUsage, type AgentEvent, type TaskResult } from "./types.ts";
 import { formatVerify, runVerify, type VerifyResult } from "./verify.ts";
 
 export interface OpsHooks {
+  /** The orchestrator created a subagent (spawn_agent). */
+  onSpawn?: (name: string, def: RawAgent) => void;
   onDelegateStart?: (info: { taskId: string; agent: string; model?: string; task: string; buildOn?: string }) => void;
   onDelegateEnd?: (result: TaskResult) => void;
   /** Live progress from agents that stream it (ACP). */
@@ -38,6 +40,8 @@ export type SessionTask = TaskResult & { prompt: string; parents: string[]; disc
 /** Tasks produced during one orchestrator session, in order. */
 export class Session {
   tasks = new Map<string, SessionTask>();
+  /** Subagents the orchestrator spawned this session (spawn_agent), by name. */
+  spawned = new Map<string, RawAgent>();
   /** Tool approvals answered "always" during this session. */
   always = new Set<string>();
   /** Tasks that still have reviewable changes on a branch. */
@@ -100,8 +104,8 @@ export class TaskOps {
 
   /** Validate an agent + build_on; returns the base ref to start from, or an error. */
   check(agent: string, buildOn?: string): { baseRef?: string } | { error: string } {
-    if (!this.cfg.agents[agent] || !this.allowed.includes(agent)) {
-      return { error: `Unknown or disallowed agent "${agent}". Allowed: ${this.allowed.join(", ")}` };
+    if (!this.session.spawned.has(agent) && (!this.cfg.agents[agent] || !this.allowed.includes(agent))) {
+      return { error: `Unknown or disallowed agent "${agent}". Allowed: ${[...this.allowed, ...this.session.spawned.keys()].join(", ")} (or spawn one with spawn_agent)` };
     }
     if (!buildOn) return {};
     const prev = this.session.tasks.get(buildOn);
@@ -115,7 +119,7 @@ export class TaskOps {
     const checked = this.check(agent, buildOn);
     if ("error" in checked) throw new Error(checked.error);
     const base = from ? { baseRef: from.ref } : checked;
-    const def = this.cfg.agents[agent]!;
+    const def = this.session.spawned.get(agent) ?? this.cfg.agents[agent]!;
     if (def.command) guard(this.cfg, `agents.${agent}.command`, `agent ${agent}'s command \`${def.command.join(" ")}\``);
     return this.slots.run(async () => {
       if (this.opts.signal?.aborted) throw new Error("run cancelled");
@@ -152,6 +156,34 @@ export class TaskOps {
     if (!this.cfg.context.repo_map) return undefined;
     const map = loadRepoMap(this.root);
     return map ? mapSlice(map, task, { chars: this.cfg.context.repo_map_chars }) : undefined;
+  }
+
+  /**
+   * Create a subagent for this session on a provider and model the user allowed (spawn.models).
+   * It works like a configured agent from then on: delegate to it by name.
+   */
+  spawn(req: { name: string; cli: string; model: string; role: string; instructions?: string; readOnly?: boolean }): RawAgent {
+    const sp = this.cfg.spawn;
+    if (!sp.enabled) throw new Error("Spawning subagents is turned off (spawn.enabled: false); use the configured agents.");
+    if (!/^[a-z][a-z0-9-]{0,30}$/.test(req.name)) throw new Error(`"${req.name}" isn't a usable name: lowercase letters, digits and dashes, starting with a letter.`);
+    if (this.cfg.agents[req.name]) throw new Error(`"${req.name}" is a configured agent already; pick another name (or just delegate to it).`);
+    const pool = spawnPool(this.cfg);
+    const models = pool[req.cli];
+    if (!models) throw new Error(`Provider "${req.cli}" isn't in the pool the user allowed. Allowed: ${Object.entries(pool).map(([c, m]) => `${c} (${(m as string[]).join(", ")})`).join("; ") || "nothing"}.`);
+    if (!models.includes(req.model)) throw new Error(`Model "${req.model}" isn't allowed for ${req.cli}. Allowed: ${models.join(", ")}.`);
+    const existing = this.session.spawned.get(req.name);
+    if (!existing && this.session.spawned.size >= sp.max) throw new Error(`This session already spawned ${sp.max} subagents (spawn.max); reuse one of them: ${[...this.session.spawned.keys()].join(", ")}.`);
+    const def: RawAgent = {
+      cli: req.cli,
+      model: req.model,
+      description: req.role,
+      ...(req.instructions?.trim() ? { instructions: req.instructions.trim() } : {}),
+      ...(req.readOnly ? { permission: "plan" as const } : {}),
+      timeout: 30 * 60_000,
+    };
+    this.session.spawned.set(req.name, def);
+    this.hooks.onSpawn?.(req.name, def);
+    return def;
   }
 
   /** after_task hooks run in the task's worktree; what they change is committed to the task. */
