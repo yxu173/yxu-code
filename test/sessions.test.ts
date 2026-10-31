@@ -105,7 +105,7 @@ function app(root: string, engine: Engine, resume?: SessionFile) {
 function app_(root: string, engine: Engine, resume?: SessionFile) {
   let frame: Frame = { rows: [] };
   const a = new App({
-    cfg: parseConfig("agents:\n  coder: { cli: opencode }\ncontext: { repo_map: false }\n", join(root, "yxu.yaml")),
+    cfg: parseConfig("agents:\n  coder: { cli: opencode }\ncontext: { repo_map: false }\nsettings: { apply: ask }\n", join(root, "yxu.yaml")),
     root,
     resume,
     theme: createTheme({ depth: "none", ascii: false, reducedMotion: true }),

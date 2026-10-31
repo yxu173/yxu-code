@@ -3,9 +3,9 @@ import { dirname } from "node:path";
 import { combineTasks, readTaskRecord } from "./combine.ts";
 import { toProfile, type Config } from "./config.ts";
 import { taskData } from "./actions.ts";
-import { branchFor, collectChanges, createWorktree, git, removeWorktree, worktreeFor, YXU_IDENTITY } from "./git.ts";
+import { branchFor, collectChanges, createWorktree, git, removeWorktree, snapshot, worktreeFor, YXU_IDENTITY } from "./git.ts";
 import { formatHookFailure, hasHooks, runHooks } from "./hooks.ts";
-import { newTaskId, runTask, Semaphore, writeTaskRecord } from "./runner.ts";
+import { newTaskId, readOrigin, runTask, Semaphore, writeTaskRecord } from "./runner.ts";
 import { taskPrompt } from "./prompts.ts";
 import { addNote } from "./task-notes.ts";
 import { alwaysRule, type PermissionRequest } from "./permissions.ts";
@@ -277,7 +277,8 @@ export class TaskOps {
     const prev = buildOn ? this.session.tasks.get(buildOn) : undefined;
     if (buildOn && !prev) throw new Error(`Unknown task_id "${buildOn}".`);
     const taskId = newTaskId();
-    const wt = createWorktree(this.root, taskId, prev?.branch);
+    const wt = createWorktree(this.root, taskId, prev?.branch ?? snapshot(this.root));
+    const origin = prev ? (readOrigin(this.root, prev.taskId) ?? wt.base) : wt.base;
     this.hooks.onShellStart?.({ id, command, buildOn });
     let result: VerifyResult;
     let task: TaskResult | undefined;
@@ -300,7 +301,7 @@ export class TaskOps {
           worktree: wt.path,
         };
         this.session.tasks.set(taskId, { ...task, prompt: command, parents: buildOn ? [buildOn] : [] });
-        writeTaskRecord(this.root, task, { prompt: command, baseRef: prev?.branch });
+        writeTaskRecord(this.root, task, { prompt: command, baseRef: prev?.branch, origin });
       }
     } finally {
       if (!task) removeWorktree(this.root, taskId, true);

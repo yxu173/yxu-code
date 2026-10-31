@@ -15,7 +15,8 @@ import { renderFrame, STATUS_WORD, type Frame } from "../src/tui/view.ts";
 import { emptyUsage, type TaskResult } from "../src/types.ts";
 
 const strip = (s: string) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "");
-const cfg = parseConfig(DEFAULT_YAML, "test");
+// These tests drive the decision box: results wait for a choice (apply: ask).
+const cfg = parseConfig(DEFAULT_YAML.replace("settings:\n", "settings:\n  apply: ask\n"), "test");
 const ctxInfo: ContextInfo = {
   root: "/repo",
   branch: "main",
@@ -192,7 +193,7 @@ describe("renderFrame", () => {
     const text = strip(frame(color, 140, 44).rows.join("\n"));
     expect(text).toContain("Your decision");
     expect(text).toContain("DECISION REQUIRED");
-    expect(text).toContain("[a] apply to your branch");
+    expect(text).toContain("[a] apply to your working tree");
     expect(text).toContain("fault");
     expect(text).toContain("rate-limited"); // recovery hint
     for (const status of ["ready", "working", "complete", "fault", "cancelling"] as const) {
@@ -381,7 +382,7 @@ describe("App interaction", () => {
     app.input("a");
     await tick(); // apply is async (before_apply hooks may run)
     expect(applied).toEqual(["t1"]);
-    expect(screen()).toContain("Applied. merged yxu/t1 into main.");
+    expect(screen()).toContain("Merged yxu/t1 into main. Review with git diff; /undo puts it back.");
     expect(["complete", "ready"]).toContain(app.store.state.status);
     expect(app.store.state.cost.orchestrator).toBeCloseTo(0.05);
     expect(app.store.state.remembering).toBe(true);

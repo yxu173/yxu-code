@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 import { getWorkflow, orchestratorLabel, loadConfig, toProfile, type Config } from "./config.ts";
 import { loadLayers } from "./config-layers.ts";
 import { buildContextPrompt, compactSettings, formatTokens, settingSources, worthCompacting } from "./context.ts";
-import { applyWithHooks, discardTask } from "./actions.ts";
+import { applyWithHooks, discardTask, undoApply } from "./actions.ts";
 import { combineTasks, readTaskRecord } from "./combine.ts";
 import { branchFor, repoRoot, tryGit } from "./git.ts";
 import { Session, TaskOps } from "./ops.ts";
@@ -56,6 +56,8 @@ Usage:
                             reopen a session from any folder: its conversation and pending
                             results (no id: pick from a list); yxu -c continues this repo's latest
   yxu map [words]           the repo map shared with every agent: overview, or what it finds
+  yxu undo                  put back what the last apply changed in your working tree
+  yxu clean                 remove the branches of applied and discarded tasks
   yxu pr [task] [--title T] [--base B] [--branch name] [--draft] [--dry-run]
                             push a task's branch and open a pull request: what each agent
                             did, checks, review findings, "Closes #issue" (needs gh)
@@ -260,6 +262,7 @@ async function run(argv: string[]) {
       session: { type: "string", short: "s" },
       issue: { type: "string" },
       image: { type: "string", multiple: true },
+      "no-apply": { type: "boolean" },
       permissions: { type: "string" },
     },
   });
@@ -382,9 +385,17 @@ async function run(argv: string[]) {
     else console.log(bold("─── done ───"));
     const cost = `orchestrator $${outcome.costUsd.toFixed(4)} · subagents $${r.subagentCost().toFixed(4)}`;
     console.log(dim(`${outcome.session.tasks.size} task(s) · ${cost} · ${outcome.runId}`));
-    printApplyHints(
-      outcome.session.tips().map((t) => ({ taskId: t.taskId, agent: t.agent, includes: outcome.session.ancestorCount(t.taskId) })),
-    );
+    // settings.apply auto (default): a finished run's single result goes into the working tree.
+    const tips = outcome.session.tips();
+    if (outcome.ok && !values["no-apply"] && cfg.settings.apply === "auto" && tips.length === 1) {
+      const a = await applyWithHooks(cfg, root, tips[0]!.taskId);
+      if (a.ok) {
+        console.log(`✓ ${a.message}\n  ${dim("review: git diff · undo: yxu undo")}`);
+        return outcome;
+      }
+      console.log(`! couldn't apply ${tips[0]!.taskId}: ${a.message}`);
+    }
+    printApplyHints(tips.map((t) => ({ taskId: t.taskId, agent: t.agent, includes: outcome.session.ancestorCount(t.taskId) })));
     return outcome;
   }
 }
@@ -1084,6 +1095,22 @@ try {
     case "resume":
       await resumeCommand(rest);
       break;
+    case "undo": {
+      const r = undoApply(repoRoot(process.cwd()));
+      if (!r.ok) die(r.message);
+      console.log(`✓ ${r.message}`);
+      break;
+    }
+    case "clean": {
+      const root = repoRoot(process.cwd());
+      tryGit(root, "worktree", "prune");
+      // Branches of tasks that were applied or discarded (no worktree left).
+      const live = new Set(tryGit(root, "worktree", "list", "--porcelain").out.split("\n").filter((l) => l.startsWith("branch refs/heads/")).map((l) => l.slice(18)));
+      const old = tryGit(root, "for-each-ref", "--format=%(refname:short)", "refs/heads/yxu/").out.split("\n").filter((b) => b && !live.has(b));
+      for (const b of old) tryGit(root, "branch", "-D", b);
+      console.log(`✓ removed ${old.length} finished task branch${old.length === 1 ? "" : "es"}${live.size ? ` (${live.size} still waiting: yxu show / apply / discard)` : ""}`);
+      break;
+    }
     case "__summarize":
       await summarizeDetached(rest);
       break;

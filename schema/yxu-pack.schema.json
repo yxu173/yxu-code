@@ -361,6 +361,16 @@
                 "number"
               ]
             },
+            "apply": {
+              "default": "auto",
+              "description": "How results reach your working tree: auto (applied when a run ends, /undo reverts), ask (you choose: apply, diff, later, discard), manual (/apply)",
+              "type": "string",
+              "enum": [
+                "auto",
+                "ask",
+                "manual"
+              ]
+            },
             "permissions": {
               "default": "ask",
               "description": "How much runs without asking: ask (ask for approval), auto (a classifier approves or blocks each action, asks when unsure), full (everything runs; agents get yolo)",

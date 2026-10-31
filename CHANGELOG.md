@@ -6,10 +6,24 @@ before 1.0, minor versions may change the config format (with migration notes he
 ## Unreleased
 
 ### Added
+- `/undo` and `yxu undo`: put back what the last apply changed (files edited since are left).
+- `yxu clean`: remove the branches of applied and discarded tasks.
 - Permissions for the session: Ask for approval (default), Approve for me (a classifier approves
   or blocks each action, asking you when unsure, with a quick path for obvious cases), and Full
   access (everything runs; agents get yolo). `/permissions`, shift+tab to cycle, the header shows
   the mode, `settings.permissions`, `yxu run --permissions`. An untrusted repo can't raise it.
+
+### Changed
+- Results land in your working tree as uncommitted changes, like an agent working in place: no
+  commit, no merge commit, no branch switch, and no "commit or stash first". Files you edited
+  meanwhile are merged three ways; only overlapping lines get conflict markers. `settings.apply`:
+  `auto` (default, applied when a run ends), `ask`, `manual`; `yxu run --no-apply`.
+- Tasks start from your working tree as it is (uncommitted and untracked changes included), so
+  agents see your current code.
+
+### Fixed
+- An agent that checked out another branch in its worktree (e.g. to look at a PR) made yxu record
+  that whole branch as the agent's changes. That branch is now ignored, with a warning.
 
 ## 0.1.3 (2026-10-26)
 
