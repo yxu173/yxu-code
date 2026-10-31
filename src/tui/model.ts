@@ -82,6 +82,8 @@ export interface ContextInfo {
   branch: string;
   /** Orchestrator reasoning effort, when set. */
   effort?: string;
+  /** How much runs without asking: ask, auto, full. */
+  access?: "ask" | "auto" | "full";
   configSource: string;
   workflow: string;
   mode: string;
